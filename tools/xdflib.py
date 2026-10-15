@@ -21,8 +21,86 @@ Notes on this XDF specifically:
 Use /usr/bin/python3 on macOS if your Homebrew python's expat is broken.
 """
 
+import re as _re
 import struct
-import xml.etree.ElementTree as ET
+
+try:
+    import xml.etree.ElementTree as ET
+    ET.fromstring('<probe/>')          # Homebrew pythons may lack pyexpat
+    _HAVE_ET = True
+except ImportError:
+    _HAVE_ET = False
+
+
+class _MiniEl:
+    """Tiny ElementTree-compatible element for the expat-free fallback."""
+    __slots__ = ('tag', 'attrib', 'children', 'text')
+
+    def __init__(self, tag, attrib):
+        self.tag, self.attrib, self.children, self.text = tag, attrib, [], None
+
+    def get(self, key, default=None):
+        return self.attrib.get(key, default)
+
+    def find(self, tag):
+        for c in self.children:
+            if c.tag == tag:
+                return c
+        return None
+
+    def findall(self, tag):
+        return [c for c in self.children if c.tag == tag]
+
+    def findtext(self, tag, default=None):
+        c = self.find(tag)
+        return c.text if c is not None and c.text is not None else default
+
+
+def _unescape(s):
+    for ent, ch in (('&lt;', '<'), ('&gt;', '>'), ('&quot;', '"'),
+                    ('&apos;', "'"), ('&amp;', '&')):
+        s = s.replace(ent, ch)
+    return s
+
+
+_TOKEN = _re.compile(
+    r'<!--.*?-->'                                   # comments
+    r'|<\?[^>]*\?>'                                 # declarations
+    r'|<([A-Za-z_][-\w.]*)((?:\s+[-\w.:]+="[^"]*")*)\s*(/?)>'  # open/empty
+    r'|</([-\w.:]+)\s*>', _re.S)
+_ATTR = _re.compile(r'([-\w.:]+)="([^"]*)"')
+
+
+def _parse_no_expat(path):
+    """Minimal non-validating XML parser (no pyexpat) sufficient for XDFs."""
+    with open(path, newline='') as f:
+        src = f.read()
+    root = None
+    stack = []
+    pos = 0
+    for m in _TOKEN.finditer(src):
+        if stack and stack[-1].text is None:
+            gap = src[pos:m.start()].strip()
+            if gap:
+                stack[-1].text = _unescape(gap)
+        pos = m.end()
+        if m.group(1):                               # open or self-closing
+            el = _MiniEl(m.group(1), {k: _unescape(v) for k, v
+                                      in _ATTR.findall(m.group(2) or '')})
+            if stack:
+                stack[-1].children.append(el)
+            elif root is None:
+                root = el
+            if not m.group(3):                       # not self-closing
+                stack.append(el)
+        elif m.group(4):                             # close tag
+            while stack and stack[-1].tag != m.group(4):
+                stack.pop()                          # tolerate mismatches
+            if stack:
+                stack.pop()
+    if root is None:
+        raise ValueError(f'{path}: no XML root element found')
+    return root
 
 FLAG_SIGNED = 0x01
 FLAG_LSBFIRST = 0x02
@@ -154,8 +232,10 @@ class Patch(Item):
 class XDF:
     def __init__(self, path):
         self.path = path
-        tree = ET.parse(path)
-        root = tree.getroot()
+        if _HAVE_ET:
+            root = ET.parse(path).getroot()
+        else:                       # pyexpat broken (some Homebrew pythons)
+            root = _parse_no_expat(path)
         hdr = root.find('XDFHEADER')
         self.title = hdr.findtext('deftitle')
         self.description = hdr.findtext('description')

@@ -28,6 +28,7 @@ fails with a `pyexpat`/`expat` ImportError, use the system interpreter:
 | `xdf_patch.py` | List, preview (`--show`) or apply (`--apply`) the XDF's `[PATCH]` entries |
 | `annotate_xdf.py` | Write the educated guesses from `docs/data/unlabelled-guesses.csv` into the XDF's own item descriptions (in place, idempotent, formatting-preserving) |
 | `xdf_checksum.py` | Clean-room checksum **search / verify / sign**: confirms the CRC algorithm+region against your stock read once, then signs edited bins (used by the GUI's Sign bin button) |
+| `xdf_tune.py` | Every tuning feature as a scriptable CLI: `shift-offset`, `quickness`, `redline-hold`, `early-upshift`, `wheel` (mm or `--tire 225/45R17`), `diff-check` (learn-list landing + circumference fix), `tcc-na` (NA slip-strategy scaling), `copy-tables` (import e.g. the tcmodel K/mu converter model from an N20/N55 donor read) |
 
 ## GUI
 
@@ -61,6 +62,13 @@ writes a new file.
   lowering of all upshift lines — full effect at closed throttle, zero from
   80% pedal, each point clamped ≥ its downshift line + 100 rpm so the box
   can't hunt).
+- **Vehicle tab** — wheel circumference (direct mm or tire-size calculator),
+  a diff-ratio checker that shows where the TCU's fixed learn list will land
+  and can trim the circumference so learning comes out right (the TCU learns
+  the axle ratio; there is no stored diff-ratio byte), and a torque-converter
+  section that imports the `tcmodel_K_curve`/`tcmodel_mu_curve` plant model
+  from an N20- or N55-converter donor read (via the donor's own XDF when it
+  is a different ZB).
 - **Sign bin / Flash…** — Sign recomputes the calibration checksum using the
   profile `xdf_checksum.py search` confirmed against your stock read; Flash
   explains the validated handoff (save the signed 2 MB image, flash with 8HPe

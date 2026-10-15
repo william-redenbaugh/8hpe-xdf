@@ -280,8 +280,10 @@ class App(tk.Tk):
         self._build_bulk_tab()
         self._build_shift_tab()
         self._build_na_tab()
+        self._build_vehicle_tab()
         self._build_changes_tab()
-        self.tabs.bind('<<NotebookTabChanged>>', lambda e: self._refresh_changes())
+        self.tabs.bind('<<NotebookTabChanged>>', lambda e: (
+            self._refresh_changes(), self._wheel_refresh()))
 
     # -- single table editor ----------------------------------------------
     def _build_table_tab(self):
@@ -895,6 +897,185 @@ class App(tk.Tk):
             text=f'Early upshift: {n} cells lowered (pedal-weighted, '
                  f'{clamped} clamped to downshift line + 100 rpm).')
         self._show_selected()
+
+    # -- vehicle (wheel / diff / converter) -----------------------------------
+    def _build_vehicle_tab(self):
+        import xdf_tune
+        self._tune = xdf_tune
+        tab = ttk.Frame(self.tabs, padding=6)
+        self.tabs.add(tab, text='Vehicle')
+
+        w = ttk.LabelFrame(tab, text='Wheel circumference (Radumfang)', padding=6)
+        w.pack(fill='x', pady=4)
+        ttk.Label(w, text=(
+            'The dynamic ROLLING circumference the TCU uses to learn the axle '
+            'ratio. Enter mm directly, or a tire size to calculate it '
+            '(pi x (rim x 25.4 + 2 x width x profile%) x 0.97).'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row = ttk.Frame(w)
+        row.pack(fill='x', pady=2)
+        self.wheel_current = ttk.Label(row, text='current: (open a bin)')
+        self.wheel_current.pack(side='left')
+        ttk.Label(row, text='   tire:').pack(side='left')
+        self.tire_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.tire_var, width=12).pack(side='left')
+        ttk.Button(row, text='Calc', command=self._tire_calc).pack(side='left', padx=2)
+        ttk.Label(row, text='mm:').pack(side='left')
+        self.wheel_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.wheel_var, width=7).pack(side='left')
+        ttk.Button(row, text='Set', command=self._wheel_set).pack(side='left', padx=4)
+
+        d = ttk.LabelFrame(tab, text='Diff ratio (learned, not programmed)', padding=6)
+        d.pack(fill='x', pady=4)
+        ttk.Label(d, text=(
+            'The TCU LEARNS the rear-axle ratio and snaps it to a fixed list - '
+            'there is no stored diff-ratio byte to edit. Enter your real diff '
+            'ratio (and, after driving, the learned value from Tool32 '
+            'status_lernfkt): this checks the landing and can trim the '
+            'circumference so learning comes out right.'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row2 = ttk.Frame(d)
+        row2.pack(fill='x', pady=2)
+        ttk.Label(row2, text='real ratio:').pack(side='left')
+        self.diff_var = tk.StringVar()
+        ttk.Entry(row2, textvariable=self.diff_var, width=7).pack(side='left')
+        ttk.Label(row2, text='learned (optional):').pack(side='left')
+        self.learned_var = tk.StringVar()
+        ttk.Entry(row2, textvariable=self.learned_var, width=7).pack(side='left')
+        ttk.Button(row2, text='Check', command=self._diff_check).pack(side='left', padx=4)
+        ttk.Button(row2, text='Apply suggested circumference',
+                   command=self._diff_fix).pack(side='left')
+        self.diff_info = ttk.Label(d, text='', wraplength=740, justify='left')
+        self.diff_info.pack(anchor='w')
+
+        c = ttk.LabelFrame(tab, text='Torque converter model (N20 / N55 donor)', padding=6)
+        c.pack(fill='x', pady=4)
+        ttk.Label(c, text=(
+            'The converter-specific plant model is tcmodel_K_curve / '
+            'tcmodel_mu_curve (HIGH confidence). This E70 calibration was '
+            'matched to its original converter; an N20-spec converter is a '
+            'higher-slip, lag-masking design, an N55 unit is tighter. Real '
+            'K/mu values must come from a factory calibration for that '
+            'converter: pick a donor read (+ the XDF that matches the donor '
+            'if it is a different ZB) and import. After importing, reset TCC '
+            'adaptation and re-log (see docs/analysis/n52k-tcc-optimization.md).'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row3 = ttk.Frame(c)
+        row3.pack(fill='x', pady=2)
+        ttk.Button(row3, text='Pick donor bin…', command=self._pick_donor).pack(side='left')
+        ttk.Button(row3, text='Donor XDF (optional)…',
+                   command=self._pick_donor_xdf).pack(side='left', padx=4)
+        ttk.Button(row3, text='Import K/mu from donor',
+                   command=self._import_converter).pack(side='left')
+        self.donor_info = ttk.Label(c, text='donor: (none)', wraplength=740,
+                                    justify='left')
+        self.donor_info.pack(anchor='w')
+        self._donor_bin = self._donor_xdf = None
+
+    def _wheel_refresh(self):
+        if self.ws.work is None:
+            return
+        try:
+            const = self._tune.find_constant(self.ws.xdf, 'Radumfang')
+            val = decode_constant(self.ws.work, const)
+            self.wheel_current.config(text=f'current: {val} mm')
+        except SystemExit:
+            self.wheel_current.config(text='current: (no Radumfang item in this XDF)')
+
+    def _tire_calc(self):
+        try:
+            mm = self._tune.tire_circumference(self.tire_var.get())
+        except ValueError as e:
+            messagebox.showerror('Tire size', str(e))
+            return
+        self.wheel_var.set(str(round(mm)))
+
+    def _wheel_set(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        try:
+            mm = float(self.wheel_var.get())
+        except ValueError:
+            messagebox.showerror('Bad value', 'Circumference must be a number (mm).')
+            return
+        const = self._tune.find_constant(self.ws.xdf, 'Radumfang')
+        self.ws.set_cells(f'wheel circumference {mm:.0f} mm',
+                          [(const.embedded, 1, 1, 0, 0, mm)])
+        self._wheel_refresh()
+        self._set_status(f'Wheel circumference set to {mm:.0f} mm. After '
+                         'flashing: reset the learned axle value and re-learn.')
+
+    def _diff_check(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        try:
+            ratio = float(self.diff_var.get())
+            learned = float(self.learned_var.get()) if self.learned_var.get() else None
+        except ValueError:
+            messagebox.showerror('Bad value', 'Ratios must be numbers.')
+            return
+        const = self._tune.find_constant(self.ws.xdf, 'Radumfang')
+        circ = decode_constant(self.ws.work, const)
+        lines, suggestion = self._tune.diff_report(ratio, learned, circ)
+        self._diff_suggestion = suggestion
+        self.diff_info.config(text='\n'.join(lines))
+
+    def _diff_fix(self):
+        if getattr(self, '_diff_suggestion', None) is None:
+            messagebox.showinfo('Nothing to apply',
+                                'Run Check with both ratios first - a suggestion '
+                                'only exists when learned differs from real.')
+            return
+        self.wheel_var.set(str(round(self._diff_suggestion)))
+        self._wheel_set()
+
+    def _pick_donor(self):
+        path = filedialog.askopenfilename(title='Donor calibration read',
+                                          filetypes=[('Bin files', '*.bin'),
+                                                     ('All files', '*')])
+        if path:
+            self._donor_bin = path
+            self.donor_info.config(text=f'donor: {path}'
+                                   + (f' | XDF: {self._donor_xdf}'
+                                      if self._donor_xdf else ' | XDF: same as target'))
+
+    def _pick_donor_xdf(self):
+        path = filedialog.askopenfilename(title='XDF matching the donor',
+                                          filetypes=[('XDF files', '*.xdf'),
+                                                     ('All files', '*')])
+        if path:
+            self._donor_xdf = path
+            self._pick_donor_refresh()
+
+    def _pick_donor_refresh(self):
+        self.donor_info.config(text=f'donor: {self._donor_bin or "(none)"} | '
+                               f'XDF: {self._donor_xdf or "same as target"}')
+
+    def _import_converter(self):
+        if self.ws.work is None or not self._donor_bin:
+            messagebox.showinfo('Missing input', 'Open a bin and pick a donor first.')
+            return
+        try:
+            donor_xdf = XDF(self._donor_xdf) if self._donor_xdf else self.ws.xdf
+            donor = bytearray(open(self._donor_bin, 'rb').read())
+            before = bytes(self.ws.work)
+            copied = self._tune.op_copy_tables(
+                self.ws.work, self.ws.xdf, donor, donor_xdf,
+                ['tcmodel_K_curve', 'tcmodel_mu_curve'])
+        except (OSError, ValueError) as e:
+            messagebox.showerror('Import failed', str(e))
+            return
+        # fold the byte changes into the undo stack
+        patch = [(i, before[i:i + 1], bytes(self.ws.work[i:i + 1]))
+                 for i in range(len(before)) if before[i] != self.ws.work[i]]
+        if patch:
+            self.ws.undo_stack.append(('import converter K/mu from donor', patch))
+        self._set_status('Imported ' + ', '.join(f'{t} ({n} cells)'
+                                                 for t, n in copied)
+                         + ' - reset TCC adaptation after flashing.')
+        self._refresh_changes()
 
     # -- sign / flash --------------------------------------------------------
     def _sign_bin(self):
