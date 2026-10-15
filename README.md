@@ -32,9 +32,11 @@ Every parameter the XDF defines - 4,252 tables, 17 constants and 2 patches acros
 
 Deep dives in [docs/analysis/](docs/analysis/): [TCC lock-up behaviour](docs/analysis/tcc-lockup.md), [sensor faults during manual shifting](docs/analysis/manual-shift-sensor-faults.md), and [optimizing the converter for an NA (N52K) swap](docs/analysis/n52k-tcc-optimization.md).
 
-## Command-line tools
+## GUI editor and command-line tools
 
-[tools/](tools/README.md) has dependency-free Python scripts for working with the XDF outside TunerPro: search the definition (`xdf_ls.py`), decode any table or constant from your read (`xdf_show.py`), export the full inventory to JSON/CSV (`xdf_export.py`), diff two bins in XDF terms (`xdf_diff.py`), and preview or apply the [PATCH] entries (`xdf_patch.py`).
+**`./run.sh [my_read.bin]`** launches a GUI bin editor (Python/tkinter, no dependencies) with this XDF loaded: browse and edit any table in a grid, bulk-edit whole families of related tables with one slider, and a **shift speed** preset that moves the shift lines of selected gear pairs and characteristics together — optionally dragging the downshift lines along to preserve hysteresis. Edits go into your calibration **binary** (never the XDF); saving writes a new .bin that TunerPro and your flash tool ingest as usual. Checksums are not corrected.
+
+[tools/](tools/README.md) additionally has dependency-free CLI scripts: search the definition (`xdf_ls.py`), decode any table or constant from your read (`xdf_show.py`), export the full inventory to JSON/CSV (`xdf_export.py`), diff two bins in XDF terms (`xdf_diff.py`), and preview or apply the [PATCH] entries (`xdf_patch.py`).
 
 ## Wheel circumference (Radumfang)
 

@@ -19,12 +19,34 @@ fails with a `pyexpat`/`expat` ImportError, use the system interpreter:
 
 | Script | What it does |
 |---|---|
-| `xdflib.py` | Library: XDF parser + bin decoder (import it from your own scripts) |
+| `xdf_gui.py` | **GUI editor** (tkinter, stdlib only): browse/search all tables, edit any table in a grid, bulk-edit whole families with a slider, and a shift-speed preset that moves selected shift lines across all 23 characteristics at once |
+| `xdflib.py` | Library: XDF parser + bin decoder/encoder (import it from your own scripts) |
 | `xdf_ls.py` | List/search defined items by name, category, kind or address |
 | `xdf_show.py` | Decode and print one table/constant from a calibration read |
 | `xdf_export.py` | Export the whole inventory to JSON/CSV, optionally with decoded values |
 | `xdf_diff.py` | Diff two bins through the XDF: which defined items changed, cell by cell |
 | `xdf_patch.py` | List, preview (`--show`) or apply (`--apply`) the XDF's `[PATCH]` entries |
+
+## GUI
+
+```sh
+cd tools
+/usr/bin/python3 xdf_gui.py ../8hpe_cali_v3.xdf my_read.bin
+```
+
+- **Table tab** — pick any table or constant on the left, edit cells in a grid
+  (axes decoded live from your bin), Apply writes them back in memory.
+- **Bulk edit tab** — a regex/category filter selects a whole family of
+  related tables (duplicated definitions of the same flash bytes are applied
+  once); one offset or percent slider changes all of them, with optional
+  sentinel skipping.
+- **Shift speed tab** — the sliding-scale shift-point control: pick gear pairs
+  and characteristics, drag the rpm offset, and all selected upshift lines
+  move together, optionally dragging the matching downshift lines along so the
+  up/down hysteresis is preserved. 8000-rpm "shift disabled" sentinels are
+  never touched.
+- **Changes tab** — everything that differs from the loaded original, with
+  per-item revert; plus a global undo stack. Saving always writes a new file.
 
 ## Examples
 

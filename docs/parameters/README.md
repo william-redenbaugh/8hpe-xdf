@@ -44,6 +44,7 @@ categories, produced by static reverse engineering of the ZF 8HP E-series TCU
 | 9 | [Signals & diagnosis](09-signals-diagnosis.md) | 167 | Input conditioning: speed/torque/temperature models, drag-torque losses, monitoring thresholds |
 | 10 | [Patches, Stage 3 & additional maps](10-patches-stage3.md) | 131 | The two `[PATCH]` items (Start in 2nd, True manual), the Radumfang constant, the stage-3 map list, tune-touched extras |
 | 11 | [Unlabelled structures](11-unlabelled.md) | 2,461 | Auto-detected curves/maps whose meaning is not yet analysed — reference material, do not edit |
+| 12 | [Unlabelled: educated guesses](12-unlabelled-guesses.md) | 2,609 | Speculative per-item guesses for everything undocumented, from address clustering, labelled neighbours and axis signatures ([full CSV](../data/unlabelled-guesses.csv)) |
 
 Counts sum to 4,271 (items that appear in two categories — e.g. the stage-3
 duplicates — are counted in each chapter that documents them).

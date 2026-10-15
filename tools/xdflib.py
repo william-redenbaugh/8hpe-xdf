@@ -191,6 +191,56 @@ class XDF:
 
 # ---------------------------------------------------------------- decoding
 
+def element_offset(emb, rows, cols, r, c):
+    """Byte offset of element (r, c) in the bin, honouring this XDF's layout
+    conventions (see module docstring)."""
+    elem_bytes = emb.elem_bits // 8
+    if emb.minor_stride and emb.col_major:
+        col_pitch_bits = (rows - 1) * emb.elem_bits + emb.minor_stride
+        if col_pitch_bits % 8:
+            raise ValueError('column pitch is not byte-aligned')
+        return emb.address + c * (col_pitch_bits // 8) + r * elem_bytes
+    if emb.minor_stride or emb.major_stride:
+        raise ValueError('unsupported stride layout '
+                         f'(major={emb.major_stride}, minor={emb.minor_stride}, '
+                         f'flags=0x{emb.flags:X})')
+    if emb.col_major:
+        return emb.address + (c * rows + r) * elem_bytes
+    return emb.address + (r * cols + c) * elem_bytes
+
+
+def value_range(emb):
+    """(min, max) storable in one element."""
+    if emb.is_float:
+        return (-3.4e38, 3.4e38)
+    bits = emb.elem_bits
+    if emb.signed:
+        return (-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+    return (0, (1 << bits) - 1)
+
+
+def write_elem(buf, byte_off, emb, value, clamp=True):
+    """Encode one value into a bytearray at byte_off. Returns the stored value
+    (after clamping/rounding for integer types)."""
+    size = emb.elem_bits // 8
+    bo = '<' if emb.little_endian else '>'
+    if emb.is_float:
+        fmt = {4: 'f', 8: 'd'}[size]
+        stored = float(value)
+    else:
+        lo, hi = value_range(emb)
+        stored = int(round(value))
+        if clamp:
+            stored = max(lo, min(hi, stored))
+        elif not lo <= stored <= hi:
+            raise ValueError(f'{value} out of range for {emb.type_name()}')
+        fmt = {1: 'b' if emb.signed else 'B',
+               2: 'h' if emb.signed else 'H',
+               4: 'i' if emb.signed else 'I'}[size]
+    struct.pack_into(bo + fmt, buf, byte_off, stored)
+    return stored
+
+
 def _read_elem(buf, byte_off, emb):
     size = emb.elem_bits // 8
     raw = buf[byte_off:byte_off + size]
@@ -223,32 +273,11 @@ def decode_embedded(buf, emb, rows, cols, equation='X'):
     """Decode a rows x cols block as a list of rows (row = list of values)."""
     if emb.address is None:
         return None
-    elem_bytes = emb.elem_bits // 8
     out = [[None] * cols for _ in range(rows)]
-    if emb.minor_stride and emb.col_major:
-        # Strided column-major (see module docstring for the pitch convention)
-        col_pitch_bits = (rows - 1) * emb.elem_bits + emb.minor_stride
-        if col_pitch_bits % 8:
-            raise ValueError('column pitch is not byte-aligned')
-        col_pitch = col_pitch_bits // 8
+    for r in range(rows):
         for c in range(cols):
-            for r in range(rows):
-                off = emb.address + c * col_pitch + r * elem_bytes
-                out[r][c] = apply_equation(_read_elem(buf, off, emb), equation)
-    elif emb.minor_stride or emb.major_stride:
-        raise ValueError('unsupported stride layout '
-                         f'(major={emb.major_stride}, minor={emb.minor_stride}, '
-                         f'flags=0x{emb.flags:X})')
-    elif emb.col_major:
-        for c in range(cols):
-            for r in range(rows):
-                off = emb.address + (c * rows + r) * elem_bytes
-                out[r][c] = apply_equation(_read_elem(buf, off, emb), equation)
-    else:
-        for r in range(rows):
-            for c in range(cols):
-                off = emb.address + (r * cols + c) * elem_bytes
-                out[r][c] = apply_equation(_read_elem(buf, off, emb), equation)
+            off = element_offset(emb, rows, cols, r, c)
+            out[r][c] = apply_equation(_read_elem(buf, off, emb), equation)
     return out
 
 

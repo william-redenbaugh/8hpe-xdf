@@ -171,3 +171,5 @@ edit.
   structure start to look up in the firmware.
 
 Coverage: Covers all 2461 items in this group (15 families).
+
+See also: [educated guesses for every unlabelled item](12-unlabelled-guesses.md) — speculative subsystem and meaning hypotheses from address clustering and axis signatures.
