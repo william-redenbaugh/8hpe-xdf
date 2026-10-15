@@ -12,6 +12,30 @@ TunerPro XDF definitions and patch entries for the ZF **8HP** transmission calib
 
 The definition set is not final - coverage, naming and documentation are still being worked on and will keep improving.
 
+## Parameter documentation
+
+Every parameter the XDF defines - 4,252 tables, 17 constants and 2 patches across 52 categories - is documented by subsystem in **[docs/parameters/](docs/parameters/README.md)**: what each family does, where it lives, its axes and units, what changing it affects, and how solid the reverse-engineering evidence is (each item carries an honest HIGH/MED/LOW confidence rating).
+
+| Chapter | Contents |
+|---|---|
+| [Shift lines](docs/parameters/01-shift-lines.md) | When the box shifts - the 23 switchable shift schedules |
+| [Shift strategy](docs/parameters/02-shift-strategy.md) | Program/characteristic selection, gear limits, sport functions |
+| [Shift pressure](docs/parameters/03-shift-pressure.md) | Clutch pressure during shifts, torque limits |
+| [Shift execution](docs/parameters/04-shift-execution.md) | Phase timing, ramps, rev-match |
+| [Shift elements](docs/parameters/05-shift-elements.md) | Per-clutch fill and engagement |
+| [Torque converter](docs/parameters/06-torque-converter.md) | TCC slip control and lock-up |
+| [Adaptation](docs/parameters/07-adaptation.md) | What the TCU self-learns and its bounds |
+| [Standstill & ratio monitoring](docs/parameters/08-standstill-ratio-monitoring.md) | Neutral idle, slip-fault plausibility bands |
+| [Signals & diagnosis](docs/parameters/09-signals-diagnosis.md) | Speed/torque/temperature models, monitoring |
+| [Patches & stage 3](docs/parameters/10-patches-stage3.md) | What the [PATCH] items actually change, byte by byte |
+| [Unlabelled structures](docs/parameters/11-unlabelled.md) | The 2,461 auto-detected, not-yet-analysed items |
+
+Deep dives in [docs/analysis/](docs/analysis/): [TCC lock-up behaviour](docs/analysis/tcc-lockup.md), [sensor faults during manual shifting](docs/analysis/manual-shift-sensor-faults.md), and [optimizing the converter for an NA (N52K) swap](docs/analysis/n52k-tcc-optimization.md).
+
+## Command-line tools
+
+[tools/](tools/README.md) has dependency-free Python scripts for working with the XDF outside TunerPro: search the definition (`xdf_ls.py`), decode any table or constant from your read (`xdf_show.py`), export the full inventory to JSON/CSV (`xdf_export.py`), diff two bins in XDF terms (`xdf_diff.py`), and preview or apply the [PATCH] entries (`xdf_patch.py`).
+
 ## Wheel circumference (Radumfang)
 
 The TCU converts its output-shaft speed into vehicle speed using two programmed numbers: the **wheel circumference** and the axle ratio. It also **learns** the axle ratio while driving, by comparing its own output-shaft speed against the wheel speeds reported by the ABS/DSC - using the programmed circumference to do it. If the programmed circumference doesn't match the car, that comparison is skewed and **the learned axle ratio comes out wrong**, which shows up as poor stop/creep behaviour and odd shift decisions. The speedometer still looks fine, which is exactly why this goes unnoticed.
