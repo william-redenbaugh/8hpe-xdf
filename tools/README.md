@@ -26,6 +26,7 @@ fails with a `pyexpat`/`expat` ImportError, use the system interpreter:
 | `xdf_export.py` | Export the whole inventory to JSON/CSV, optionally with decoded values |
 | `xdf_diff.py` | Diff two bins through the XDF: which defined items changed, cell by cell |
 | `xdf_patch.py` | List, preview (`--show`) or apply (`--apply`) the XDF's `[PATCH]` entries |
+| `annotate_xdf.py` | Write the educated guesses from `docs/data/unlabelled-guesses.csv` into the XDF's own item descriptions (in place, idempotent, formatting-preserving) |
 
 ## GUI
 
@@ -33,6 +34,11 @@ fails with a `pyexpat`/`expat` ImportError, use the system interpreter:
 cd tools
 /usr/bin/python3 xdf_gui.py ../8hpe_cali_v3.xdf my_read.bin
 ```
+
+Like TunerPro, the GUI pairs a **definition** with a **binary**: both can be
+given on the command line (XDF first, bin second) or picked in the toolbar
+(`Open XDF…`, `Open bin…`). Edits always go into the binary; `Save bin as…`
+writes a new file.
 
 - **Table tab** — pick any table or constant on the left, edit cells in a grid
   (axes decoded live from your bin), Apply writes them back in memory.

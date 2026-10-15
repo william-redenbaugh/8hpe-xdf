@@ -150,7 +150,8 @@ class App(tk.Tk):
     def _build_toolbar(self):
         bar = ttk.Frame(self, padding=4)
         bar.pack(fill='x')
-        ttk.Button(bar, text='Open bin…', command=self._open_bin).pack(side='left')
+        ttk.Button(bar, text='Open XDF…', command=self._open_xdf).pack(side='left')
+        ttk.Button(bar, text='Open bin…', command=self._open_bin).pack(side='left', padx=4)
         ttk.Button(bar, text='Save bin as…', command=self._save_bin).pack(side='left', padx=4)
         ttk.Button(bar, text='Undo', command=self._undo).pack(side='left')
         self.status = ttk.Label(bar, text='', anchor='w')
@@ -158,6 +159,31 @@ class App(tk.Tk):
 
     def _set_status(self, text):
         self.status.config(text=text)
+
+    def _open_xdf(self):
+        path = filedialog.askopenfilename(
+            title='Open XDF definition',
+            filetypes=[('XDF files', '*.xdf'), ('All files', '*')])
+        if path:
+            self._load_xdf(path)
+
+    def _load_xdf(self, path):
+        try:
+            self.ws.xdf = XDF(path)
+        except Exception as e:
+            messagebox.showerror('XDF load failed', str(e))
+            return
+        cats = ['(all categories)'] + [self.ws.xdf.categories[k]
+                                       for k in sorted(self.ws.xdf.categories)]
+        self.cat_combo['values'] = cats
+        self.cat_var.set('(all categories)')
+        self.bulk_combo['values'] = ['(all)'] + cats[1:]
+        self.bulk_cat.set('(all)')
+        self.title(f'8HP XDF editor - {path.rsplit("/", 1)[-1]}')
+        self._refresh_list()
+        self._set_status(f'XDF: {path} ({len(self.ws.xdf.items)} items). '
+                         + (f'Editing {self.ws.bin_path}' if self.ws.work is not None
+                            else 'Open a bin to start editing.'))
 
     def _open_bin(self):
         path = filedialog.askopenfilename(
@@ -214,10 +240,10 @@ class App(tk.Tk):
         cats = ['(all categories)'] + [self.ws.xdf.categories[k]
                                        for k in sorted(self.ws.xdf.categories)]
         self.cat_var = tk.StringVar(value=cats[0])
-        cb = ttk.Combobox(frame, textvariable=self.cat_var, values=cats,
-                          state='readonly')
-        cb.pack(fill='x', pady=2)
-        cb.bind('<<ComboboxSelected>>', lambda e: self._refresh_list())
+        self.cat_combo = ttk.Combobox(frame, textvariable=self.cat_var,
+                                      values=cats, state='readonly')
+        self.cat_combo.pack(fill='x', pady=2)
+        self.cat_combo.bind('<<ComboboxSelected>>', lambda e: self._refresh_list())
         wrap = ttk.Frame(frame)
         wrap.pack(fill='both', expand=True)
         self.listbox = tk.Listbox(wrap, exportselection=False)
@@ -363,10 +389,10 @@ class App(tk.Tk):
         ttk.Label(row, text='Category:').pack(side='left')
         cats = ['(all)'] + [self.ws.xdf.categories[k] for k in sorted(self.ws.xdf.categories)]
         self.bulk_cat = tk.StringVar(value='(all)')
-        cb = ttk.Combobox(row, textvariable=self.bulk_cat, values=cats,
-                          state='readonly', width=32)
-        cb.pack(side='left')
-        cb.bind('<<ComboboxSelected>>', lambda e: self._bulk_preview())
+        self.bulk_combo = ttk.Combobox(row, textvariable=self.bulk_cat,
+                                       values=cats, state='readonly', width=32)
+        self.bulk_combo.pack(side='left')
+        self.bulk_combo.bind('<<ComboboxSelected>>', lambda e: self._bulk_preview())
 
         row2 = ttk.Frame(tab)
         row2.pack(fill='x', pady=4)

@@ -12,6 +12,12 @@ The complete per-item table is
 per item with its address, structure, shape, value ranges, nearest labelled
 neighbours, the per-item signal guess, and the cluster interpretation.
 
+**The guesses are also embedded in the XDF itself**: every unlabelled item's
+description in `8hpe_cali_v3.xdf` ends with a `SPECULATIVE GUESS (…)` sentence
+carrying its guess and cluster interpretation, so TunerPro and the GUI show
+them in place (`tools/annotate_xdf.py` wrote them and can re-apply after the
+CSV is regenerated).
+
 ## How the guesses were made
 
 Three mechanical signals, combined per item:
