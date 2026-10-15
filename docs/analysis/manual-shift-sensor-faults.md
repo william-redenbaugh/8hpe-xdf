@@ -38,7 +38,7 @@ The offset curves are keyed by gear pair (1>2 … 6>8, 5>4 … 8>7), i.e. the mo
 From the patch documentation (Patches group; structure of the underlying scalars "not proven", Confidence LOW):
 
 - **escalation_test1_threshold @ 0x1CECA4** (u16, stock 7100 rpm) and its neighbour **0x1CECA6** (stock 6825 rpm): thresholds of guard test 1 in FUN_0012c9b8 — the TCU-side **forced upshift at redline**. True manual sets both to 0xFFFF.
-- **0x1CC03C** — first word of an 18-u16 block, stock 7200: the cap used by guard **test 2**; patch raises it to 10000. Threshold is scaled at runtime by (da9c × df32)/100.
+- **0x1CC03C** — first word of an 18-u16 block, stock 7200: the cap used by guard **test 2**. The patch *notes* describe an R4 edit raising it to 10000, but the shipped patch entries do **not** touch this address — verified against the XDF's entry list, the shipped patch instead defeats test 2 via the df32-seed and strat_state_attr_3 edits below. Threshold is scaled at runtime by (da9c × df32)/100.
 - **df32 seeds @ 0x1D3A80/81** (stock 105, patch 0xFF → 255): multiplies the test-2 threshold to 2.55x.
 - **df31 gate @ 0x1D34B1** (stock 02, patch 00) in FUN_0012c660; the patch notes this path "hinges on runtime def4 — supervised test only", with a program patch at 0x12CA44/56 as the deterministic fix.
 - **rev-match latch arm @ 0x1D28EC** (stock 6500 rpm, patch 0xFFFF): disarms a latch that otherwise arms above 6500 rpm.
@@ -100,7 +100,7 @@ Symptom vocabulary used below (general 8HP knowledge, **not** XDF-evidenced): "g
 
 ### H5 — Side effects of the disabled guard tests: limiter bounce outside the conditioned range
 **Mechanism.** With guard test 1 dead (0xFFFF) and test 2 at 10000/2.55x, nothing TCU-side ends a held gear; the engine sits on the **DME** limiter at redline. Limiter operation is rapid torque on/off with steep engine-speed gradients. The exposed conditioning curves end at 7000 rpm (sigcond_*) and the gradient-compensation curve is only calibrated for 1200..1800 rpm — all clamped at redline. Meanwhile turbine speed physically oscillates with the limiter. A shift triggered in the middle of limiter bounce starts from a noisy speed state, again feeding H1; sustained operation there is simply unmonitored-by-design territory. The stock behaviour (before the patch) was benign precisely because test 1 upshifted the box at 7100 before this regime was reached.
-**XDF items.** 0x1CECA4/A6, 0x1CC03C block, 0x1D3A80/81, 0x1D34B1 + strat_state_attr_3 (0x1C927C); sigcond_shift_curve_0 0x19A7A0, sigcond_trq_offset_engspd 0x19A810, speed_eng_grad_comp_curve 0x19F818.
+**XDF items.** 0x1CECA4/A6, 0x1CC03C block (described, not patched), 0x1D3A80/81, 0x1D34B1 + strat_state_attr_3 (0x1C927C); sigcond_shift_curve_0 0x19A7A0, sigcond_trq_offset_engspd 0x19A810, speed_eng_grad_comp_curve 0x19F818.
 **Symptom.** Faults only when shifting *off the limiter*; none when shifting 200–300 rpm early.
 **Test/mitigation.** Reproduce deliberately: shift at 6800 vs on the limiter; if only the latter faults, this is it. Mitigation: shift before the limiter, or accept it. Note also the patch's own caveat: the 0x1D34B1 (df31) calibration-side route is flagged "supervised test only" because it depends on runtime def4 — if that path is in use rather than the program patch (0x12CA44/56) or the strat_state_attr_3 fill, inconsistent df31 behaviour across strategy states could itself produce one-off forced upshifts mid-manual-drive that get logged as implausible shift requests. Prefer the R5/K0 (strat_state_attr_3) or program-patch route.
 
@@ -121,7 +121,7 @@ Symptom vocabulary used below (general 8HP knowledge, **not** XDF-evidenced): "g
 
 **Directly evidenced by the XDF/RE notes:**
 - Existence, addresses, shapes and axis ranges of the full ratio-monitoring block (per-gear band maps set0..8, band_a..d curves, per-pair offset_a/b curves) and their reader functions (FUN_000cc21a/cc92c/cd2ac/cd610/ce8fa). Confidence mostly MED; **units of x/y are explicitly "not proven"**.
-- The True manual patch's exact edits and the stock values they replace (7100/6825 guard test 1; 7200 cap at 0x1CC03C; df32 seed 105; df31 gate 02; rev-match latch arm 6500; strat_state_attr_3 fill), including the patch's own warning that the df31 route is supervised-test-only. Underlying scalar structures mostly LOW/"not proven"; strat_state_attr_3 layout HIGH.
+- The True manual patch's exact edits and the stock values they replace (7100/6825 guard test 1; df32 seed 105; df31 gate 02; rev-match latch arm 6500; strat_state_attr_3 fill — the 7200 cap at 0x1CC03C is described in the patch notes but is not among the shipped entries), including the patch's own warning that the df31 route is supervised-test-only. Underlying scalar structures mostly LOW/"not proven"; strat_state_attr_3 layout HIGH.
 - Speed/torque signal-conditioning curves and their axis ceilings (7000 rpm; 1200–1800 rpm for gradient comp). LOW confidence labels.
 - trqloss model (gear maps and idle-load map MED, coolant curve HIGH, outspd-grad map LOW), per_gear_torque_rows reader (HIGH; the 8x9 row layout itself is not proven), torque-headroom curves (LOW, tuned).
 - The axle-ratio learn mechanism, its fixed ratio list and re-learn procedure (repo's own Radumfang patch documentation).

@@ -27,6 +27,7 @@ fails with a `pyexpat`/`expat` ImportError, use the system interpreter:
 | `xdf_diff.py` | Diff two bins through the XDF: which defined items changed, cell by cell |
 | `xdf_patch.py` | List, preview (`--show`) or apply (`--apply`) the XDF's `[PATCH]` entries |
 | `annotate_xdf.py` | Write the educated guesses from `docs/data/unlabelled-guesses.csv` into the XDF's own item descriptions (in place, idempotent, formatting-preserving) |
+| `xdf_checksum.py` | Clean-room checksum **search / verify / sign**: confirms the CRC algorithm+region against your stock read once, then signs edited bins (used by the GUI's Sign bin button) |
 
 ## GUI
 
@@ -51,6 +52,20 @@ writes a new file.
   move together, optionally dragging the matching downshift lines along so the
   up/down hysteresis is preserved. 8000-rpm "shift disabled" sentinels are
   never touched.
+- **NA presets tab** — three one-step modes for an NA swap: **Shift
+  quickness** (percent slider shortening the documented shift-execution
+  phase/sync time tables), **Hold 1st–3rd to redline** (raises the 1>2 / 2>3 /
+  3>4 upshift lines of all 23 characteristics to engine redline ÷ gear ratio,
+  never lowering anything; keep redline under the ~7100 rpm TCU guard or
+  apply True manual first), and **Early upshift (NA)** (pedal-weighted
+  lowering of all upshift lines — full effect at closed throttle, zero from
+  80% pedal, each point clamped ≥ its downshift line + 100 rpm so the box
+  can't hunt).
+- **Sign bin / Flash…** — Sign recomputes the calibration checksum using the
+  profile `xdf_checksum.py search` confirmed against your stock read; Flash
+  explains the validated handoff (save the signed 2 MB image, flash with 8HPe
+  Quickflash or your EGS flasher) — in-GUI flashing stays disabled until a
+  write path is bench-validated (see docs/analysis/quickflash-interop.md).
 - **Changes tab** — everything that differs from the loaded original, with
   per-item revert; plus a global undo stack. Saving always writes a new file.
 

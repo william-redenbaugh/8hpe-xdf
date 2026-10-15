@@ -54,6 +54,7 @@ duplicates — are counted in each chapter that documents them).
 - [TCC lock-up behaviour, in depth](../analysis/tcc-lockup.md)
 - [Sensor/monitoring faults during manual shifting](../analysis/manual-shift-sensor-faults.md)
 - [Optimizing the torque converter for an N52K (NA) swap](../analysis/n52k-tcc-optimization.md)
+- [8HPe Quickflash: functional characterization & interop plan](../analysis/quickflash-interop.md)
 
 ## Where this came from
 

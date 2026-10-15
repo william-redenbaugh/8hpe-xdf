@@ -79,11 +79,18 @@ def main():
             in_desc = True
         if in_desc and '</description>' in line:
             in_desc = False
+            note = escape(f' {MARKER} (auto-generated, weaker than LOW - '
+                          f'do not tune from this): {targets[current_uid]}.')
             if MARKER in line:
-                skipped += 1
+                # replace the previous guess with the current one
+                new_line = re.sub(f' {MARKER} \\(auto-generated[^<]*', note,
+                                  line, count=1)
+                if new_line == line:
+                    skipped += 1
+                else:
+                    lines[n] = new_line
+                    annotated += 1
             else:
-                note = escape(f' {MARKER} (auto-generated, weaker than LOW - '
-                              f'do not tune from this): {targets[current_uid]}.')
                 lines[n] = line.replace('</description>',
                                         note + '</description>', 1)
                 annotated += 1

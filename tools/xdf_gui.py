@@ -154,6 +154,8 @@ class App(tk.Tk):
         ttk.Button(bar, text='Open bin…', command=self._open_bin).pack(side='left', padx=4)
         ttk.Button(bar, text='Save bin as…', command=self._save_bin).pack(side='left', padx=4)
         ttk.Button(bar, text='Undo', command=self._undo).pack(side='left')
+        ttk.Button(bar, text='Sign bin', command=self._sign_bin).pack(side='left', padx=4)
+        ttk.Button(bar, text='Flash…', command=self._flash_info).pack(side='left')
         self.status = ttk.Label(bar, text='', anchor='w')
         self.status.pack(side='left', fill='x', expand=True, padx=12)
 
@@ -277,6 +279,7 @@ class App(tk.Tk):
         self._build_table_tab()
         self._build_bulk_tab()
         self._build_shift_tab()
+        self._build_na_tab()
         self._build_changes_tab()
         self.tabs.bind('<<NotebookTabChanged>>', lambda e: self._refresh_changes())
 
@@ -636,6 +639,312 @@ class App(tk.Tk):
         self._set_status(f'Shift offset applied: {n} cell(s) across '
                          f'{len(targets)} lines. Sentinels untouched.')
         self._show_selected()
+
+    # -- NA presets ----------------------------------------------------------
+    QUICK_RX = re.compile(
+        r'(ph\d+_time|sync_time|phase.*time|_time_|rampout)', re.I)
+    EXEC_CATS = ('Shift execution: upshift', 'Shift execution: downshift',
+                 'Shift execution: timing control', 'Shift execution: other')
+
+    def _build_na_tab(self):
+        tab = ttk.Frame(self.tabs, padding=6)
+        self.tabs.add(tab, text='NA presets')
+
+        # --- shift quickness ------------------------------------------------
+        q = ttk.LabelFrame(tab, text='Shift quickness', padding=6)
+        q.pack(fill='x', pady=4)
+        ttk.Label(q, text=(
+            'Shortens the documented shift-execution phase/sync time tables '
+            '(u8 control-cycle counts) by a percentage, so shifts complete '
+            'faster. Firmer feel, more clutch heat per shift; change in small '
+            'steps and let adaptation settle between changes.'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row = ttk.Frame(q)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text='Faster by:').pack(side='left')
+        self.quick_amount = tk.DoubleVar(value=0)
+        ttk.Scale(row, from_=0, to=40, variable=self.quick_amount,
+                  command=lambda v: self._quick_preview()).pack(
+            side='left', fill='x', expand=True, padx=8)
+        self.quick_label = ttk.Label(row, text='0 %', width=18)
+        self.quick_label.pack(side='left')
+        ttk.Button(q, text='Apply quickness',
+                   command=self._quick_apply).pack(anchor='w', pady=2)
+
+        # --- hold 1st-3rd to redline -----------------------------------------
+        r = ttk.LabelFrame(tab, text='Hold 1st-3rd to redline', padding=6)
+        r.pack(fill='x', pady=4)
+        ttk.Label(r, text=(
+            'Raises the 1>2, 2>3 and 3>4 upshift lines of ALL 23 '
+            'characteristics so those gears run to engine redline before '
+            'upshifting. Shift lines are OUTPUT-shaft rpm, so the target per '
+            'gear is redline / gear ratio (ratios editable below; defaults '
+            'are 8HP45). Values only ever get raised (never lowered), 8000 '
+            'sentinels stay, downshift lines are untouched. The TCU-side '
+            'guard tests start at ~7100 rpm stock - keep redline below that '
+            'or apply the True manual patch first.'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row2 = ttk.Frame(r)
+        row2.pack(fill='x', pady=2)
+        self.redline_var = tk.StringVar(value='7000')
+        self.margin_var = tk.StringVar(value='2')
+        self.ratio_vars = {}
+        ttk.Label(row2, text='Engine redline:').pack(side='left')
+        ttk.Entry(row2, textvariable=self.redline_var, width=6).pack(side='left')
+        ttk.Label(row2, text='rpm   margin:').pack(side='left')
+        ttk.Entry(row2, textvariable=self.margin_var, width=4).pack(side='left')
+        ttk.Label(row2, text='%   ratios:').pack(side='left')
+        for gear, default in (('1st', '4.714'), ('2nd', '3.143'), ('3rd', '2.106')):
+            ttk.Label(row2, text=f' {gear}').pack(side='left')
+            var = tk.StringVar(value=default)
+            self.ratio_vars[gear] = var
+            ttk.Entry(row2, textvariable=var, width=6).pack(side='left')
+        self.redline_info = ttk.Label(r, text='', wraplength=740, justify='left')
+        self.redline_info.pack(anchor='w')
+        ttk.Button(r, text='Apply redline hold',
+                   command=self._redline_apply).pack(anchor='w', pady=2)
+
+        # --- early upshift (NA) ----------------------------------------------
+        e = ttk.LabelFrame(tab, text='Early upshift (NA)', padding=6)
+        e.pack(fill='x', pady=4)
+        ttk.Label(e, text=(
+            'An NA engine has instant response, so part-throttle upshifts can '
+            'come earlier: this lowers every upshift line (all gear pairs, '
+            'all characteristics) by up to the slider amount, weighted by '
+            'pedal - full effect at closed throttle, fading to zero at 80% '
+            'pedal, kickdown untouched. Each point is clamped to stay at '
+            'least 100 rpm above its matching downshift line so the box '
+            'cannot hunt. 8000 sentinels stay.'),
+            wraplength=740, justify='left').pack(anchor='w')
+        row3 = ttk.Frame(e)
+        row3.pack(fill='x', pady=2)
+        ttk.Label(row3, text='Earlier by (at closed throttle):').pack(side='left')
+        self.early_amount = tk.DoubleVar(value=0)
+        ttk.Scale(row3, from_=0, to=800, variable=self.early_amount,
+                  command=lambda v: self._early_preview()).pack(
+            side='left', fill='x', expand=True, padx=8)
+        self.early_label = ttk.Label(row3, text='0 rpm', width=18)
+        self.early_label.pack(side='left')
+        ttk.Button(e, text='Apply early upshift',
+                   command=self._early_apply).pack(anchor='w', pady=2)
+
+        self.na_info = ttk.Label(tab, text='', wraplength=740, justify='left')
+        self.na_info.pack(anchor='w', pady=4)
+
+    def _quick_targets(self):
+        out, seen = [], set()
+        for t in self.ws.xdf.tables:
+            emb = t.z.embedded if t.z else None
+            if not emb or emb.address is None or emb.address in seen:
+                continue
+            if emb.elem_bits != 8 or emb.is_float:
+                continue
+            if not any(c in self.EXEC_CATS for c in t.categories):
+                continue
+            if not self.QUICK_RX.search(t.title):
+                continue
+            seen.add(emb.address)
+            out.append(t)
+        return out
+
+    def _quick_preview(self):
+        n = len(self._quick_targets())
+        self.quick_label.config(
+            text=f'{self.quick_amount.get():.0f} % ({n} tables)')
+
+    def _quick_apply(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        pct = self.quick_amount.get()
+        if not pct:
+            return
+        factor = 1 - pct / 100.0
+        writes = []
+        for t in self._quick_targets():
+            rows, cols = t.shape()
+            emb = t.z.embedded
+            try:
+                d = decode_table(self.ws.work, t)
+            except (ValueError, IndexError):
+                continue
+            for r in range(rows):
+                for c in range(cols):
+                    v = d['z'][r][c]
+                    if v <= 0 or v >= 250:          # zero/disabled or sentinel
+                        continue
+                    writes.append((emb, rows, cols, r, c, max(1, round(v * factor))))
+        n = self.ws.set_cells(f'shift quickness -{pct:.0f}%', writes)
+        self.na_info.config(text=f'Quickness: {n} time cells shortened by '
+                                 f'{pct:.0f}% (floor 1 cycle).')
+        self._show_selected()
+
+    def _redline_apply(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        try:
+            redline = float(self.redline_var.get())
+            margin = float(self.margin_var.get()) / 100.0
+            ratios = {'1>2': float(self.ratio_vars['1st'].get()),
+                      '2>3': float(self.ratio_vars['2nd'].get()),
+                      '3>4': float(self.ratio_vars['3rd'].get())}
+        except ValueError:
+            messagebox.showerror('Bad value', 'Redline, margin and ratios must be numbers.')
+            return
+        targets = {pair: round(redline * (1 - margin) / ratio)
+                   for pair, ratio in ratios.items()}
+        writes = []
+        counts = {p: 0 for p in targets}
+        seen = set()
+        for t in self.ws.xdf.tables:
+            m = UP_CURVE.match(t.title)
+            if not m:
+                continue
+            pair = f'{m.group(2)}>{m.group(3)}'
+            if pair not in targets:
+                continue
+            emb = t.z.embedded
+            if emb.address in seen:
+                continue
+            seen.add(emb.address)
+            rows, cols = t.shape()
+            d = decode_table(self.ws.work, t)
+            for r in range(rows):
+                for c in range(cols):
+                    v = d['z'][r][c]
+                    if v <= 0 or v >= SENTINEL_DEFAULT:   # dead slot / disabled
+                        continue
+                    new = max(v, targets[pair])
+                    if new != v:
+                        writes.append((emb, rows, cols, r, c, new))
+                        counts[pair] += 1
+        n = self.ws.set_cells(
+            f'redline hold 1st-3rd @{redline:.0f}rpm', writes)
+        self.redline_info.config(
+            text='Targets (output rpm): '
+                 + ', '.join(f'{p}: {v}' for p, v in targets.items())
+                 + f' - raised {n} cells '
+                 + str({p: c for p, c in counts.items()}))
+        self._show_selected()
+
+    def _early_preview(self):
+        self.early_label.config(text=f'{self.early_amount.get():.0f} rpm')
+
+    def _early_apply(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        amount = self.early_amount.get()
+        if not amount:
+            return
+        # index down curves by (char, pair) for the anti-hunting clamp
+        down = {}
+        for t in self.ws.xdf.tables:
+            m = DN_CURVE.match(t.title)
+            if m:
+                lo, hi = sorted((m.group(2), m.group(3)))
+                down[(int(m.group(1)), f'{lo}>{hi}')] = t
+        writes = []
+        seen = set()
+        clamped = 0
+        for t in self.ws.xdf.tables:
+            m = UP_CURVE.match(t.title)
+            if not m:
+                continue
+            emb = t.z.embedded
+            if emb.address in seen:
+                continue
+            seen.add(emb.address)
+            char = int(m.group(1))
+            pair = f'{m.group(2)}>{m.group(3)}'
+            rows, cols = t.shape()
+            d = decode_table(self.ws.work, t)
+            # single shift-line curves are 1x15: pedal breakpoints run along x
+            pedal = d['x'] if d['x'] and isinstance(d['x'][0], (int, float)) else None
+            dt = down.get((char, pair))
+            dvals = None
+            if dt is not None:
+                try:
+                    dvals = decode_table(self.ws.work, dt)['z']
+                except (ValueError, IndexError):
+                    dvals = None
+            for r in range(rows):
+                for c in range(cols):
+                    v = d['z'][r][c]
+                    if v <= 0 or v >= SENTINEL_DEFAULT:   # dead slot / disabled
+                        continue
+                    p = pedal[c] if pedal and c < len(pedal) else 0
+                    weight = max(0.0, 1 - p / 800.0)
+                    if weight <= 0:
+                        continue
+                    new = v - amount * weight
+                    if dvals is not None:
+                        dv = dvals[r][c] if r < len(dvals) else None
+                        if dv is not None and dv < SENTINEL_DEFAULT:
+                            floor = dv + 100
+                            if new < floor:
+                                new = floor
+                                clamped += 1
+                    new = max(0, round(new))
+                    if new != v:
+                        writes.append((emb, rows, cols, r, c, new))
+        n = self.ws.set_cells(f'early upshift -{amount:.0f}rpm (pedal-weighted)',
+                              writes)
+        self.na_info.config(
+            text=f'Early upshift: {n} cells lowered (pedal-weighted, '
+                 f'{clamped} clamped to downshift line + 100 rpm).')
+        self._show_selected()
+
+    # -- sign / flash --------------------------------------------------------
+    def _sign_bin(self):
+        """Recompute and store the calibration checksum using the profile
+        produced by xdf_checksum.py search (clean-room; see tools/README)."""
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        try:
+            import xdf_checksum
+        except ImportError:
+            messagebox.showerror('Missing', 'xdf_checksum.py not found next to the GUI.')
+            return
+        profile = xdf_checksum.load_profile()
+        if profile is None:
+            messagebox.showinfo(
+                'No checksum profile yet',
+                'The checksum algorithm must be confirmed once against YOUR '
+                'stock read before signing can be trusted:\n\n'
+                '  python3 xdf_checksum.py search your_stock_read.bin\n\n'
+                'That finds the algorithm/region whose checksum matches the '
+                'value already stored in a known-good bin and saves it to '
+                'checksum_profile.json. After that, this button signs '
+                'in one click.')
+            return
+        try:
+            old, new = xdf_checksum.sign(self.ws.work, profile)
+        except (ValueError, KeyError) as e:
+            messagebox.showerror('Sign failed', str(e))
+            return
+        self._set_status(f'Signed: stored checksum 0x{old:08X} -> 0x{new:08X} '
+                         f'({profile["algo"]} over 0x{profile["start"]:X}-'
+                         f'0x{profile["end"]:X}).')
+        self._refresh_changes()
+
+    def _flash_info(self):
+        messagebox.showinfo(
+            'Flashing',
+            'Flashing from this GUI is not enabled: the write path has not '
+            'been validated on real hardware, and an unverified TCU flash '
+            'can brick the transmission.\n\n'
+            'Validated flow:\n'
+            '  1. Edit here, Sign bin (or let your flash tool correct '
+            'checksums), Save bin as…\n'
+            '  2. Flash the saved 2 MB image with 8HPe Transmission '
+            'Quickflash (FT232RL / K+DCAN cable) or your usual EGS flasher.\n'
+            '  3. After a wheel-circumference or diff change: reset the '
+            'learned axle ratio (Tool32 gsb233.prg, '
+            'steuern_lernfkt_ruecksetzen 0) and re-learn by driving.\n\n'
+            'See docs/analysis/quickflash-interop.md for the protocol notes.')
 
     # -- changes ------------------------------------------------------------
     def _build_changes_tab(self):

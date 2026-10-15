@@ -248,7 +248,7 @@ Explicit gaps — be suspicious of anything below before tuning on top of it.
    but the tab2 layout/meaning is unproven — it is not a name-transfer.)
 5. **Dozens of unlabelled auto-detected structures sit inside the TCC clusters** (≈28 in the
    slip cluster 0x1A07xx–0x1A1Bxx alone, and on the order of 60 more in the tccctrl cluster) and
-   are functionally dark, including: six 6x6 f32 PID-shaped maps 0x1A071C–0x1A0C94; 0x1A0DEC (8x4),
+   are functionally dark, including: five 6x6 f32 PID-shaped maps (data at 0x1A0754–0x1A0C04); 0x1A0DEC (8x4),
    0x1A0FBC (6x4, x -30..400, y 3000..7000 rpm-like, z -1.55..0 — pressure-offset-shaped),
    0x1A10DC / 0x1A1224 (torque-factor-shaped), 0x1A16E4 / 0x1A17AC (6x6, temp×temp),
    0x1A1874, 0x1A1908, 0x1A1988, 0x1A1A40 (7 pt, x -10..200 → 0..250), 0x1A1BD8 (4x6,
