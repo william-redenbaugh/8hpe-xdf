@@ -31,6 +31,7 @@ addresses in the XDF are file offsets.
 | `8hpe70_cali_v3.xdf` | The definition. Open it in TunerPro with your own read. |
 | `tools/xdf_stage3.py` | Raise shift pressure using the maps a stage-3 tune touches. |
 | `tools/xdf_verify.py` | Prove a modified bin changes nothing it shouldn't. Run before flashing. |
+| `tools/xdf_gearbias.py` | Pick a higher (or lower) gear when you plant the throttle. |
 | `tools/xdf_gui.py` | The same thing with a window; start it with `./run.sh`. |
 | `tools/xdflib.py` | The XDF parser the tools share. |
 
@@ -91,6 +92,27 @@ version of it. Diff them, and compare the changed byte ranges with the toggle's.
 tune available during development targeted a different calibration (`b0bc2323`, while this XDF
 addresses `b5yc1111`), where the same addresses hold entirely different structures, so that
 comparison was not possible.
+
+## Gear choice on kickdown
+
+If planting the pedal drops it one gear further than you want:
+
+```sh
+python3 xdf_gearbias.py /path/to/stock.bin --preview      # prints a gear-choice table
+python3 xdf_gearbias.py /path/to/stock.bin -o tuned.bin
+```
+
+A downshift line is the output-shaft speed below which that downshift is requested, so the gear you
+land in is decided by where your speed falls in the ladder of thresholds. To land one gear higher,
+each line takes the value its deeper neighbour already held — the numbers come from the calibration
+itself, and the shape of the schedule is preserved rather than flattened by a blanket offset. Only
+pedal positions at or above `--pedal-from` (default 650 per mille) change, so part throttle stays
+stock.
+
+`--bias lower` does the opposite, but expect it to be mostly refused: a downshift line cannot go
+above its upshift line without the box downshifting and immediately upshifting again, so the tool
+caps it and says so. Holding a lower gear really means raising the **upshift** lines, which is a
+different change.
 
 ## Before you flash
 

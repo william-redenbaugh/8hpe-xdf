@@ -50,7 +50,11 @@ XDF_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 PRESS_RX = re.compile(r'^shift_press_map_b\d+$', re.I)
 
-LEVELS = {'mild': 4, 'sport': 8, 'max': 14}
+# Percentages are not the real limit: every cell is additionally capped at
+# its own map's maximum, and at +14% nothing is saturating yet (cells need
+# +26%..+443%, median +90%, to reach that cap). 'firm' and 'hard' exist for
+# people who want the headroom; above ~30% cells start pinning at the cap.
+LEVELS = {'mild': 4, 'sport': 8, 'max': 14, 'firm': 25, 'hard': 40}
 
 
 def pressure_tables(xdf):
@@ -103,11 +107,12 @@ def main():
     ap.add_argument('bin', help='stock calibration read')
     ap.add_argument('-o', '--out', help='output bin (omit with --preview)')
     ap.add_argument('--xdf', default=XDF_DEFAULT)
-    ap.add_argument('--level', choices=['mild', 'sport', 'max'], default='sport',
-                    help='how much more pressure: mild +4%%, sport +8%%, max +14%% '
+    ap.add_argument('--level', choices=sorted(LEVELS), default='sport',
+                    help='mild +4%%, sport +8%%, max +14%%, firm +25%%, hard +40%% '
                          '(default: sport)')
     ap.add_argument('--pct', type=float,
-                    help='exact percentage instead of --level (0..50)')
+                    help='exact percentage instead of --level (0..100); the '
+                         "per-map cap still applies, so the effect saturates")
     ap.add_argument('--any-calibration', action='store_true',
                     help='edit even if the image is a different calibration from '
                          'the one this XDF describes (the addresses then mean '
@@ -119,8 +124,8 @@ def main():
     if not args.preview and not args.out:
         ap.error('give -o OUT, or use --preview')
     pct = args.pct if args.pct is not None else LEVELS[args.level]
-    if not 0 <= pct <= 50:
-        sys.exit('--pct must be within 0..50')
+    if not 0 <= pct <= 100:
+        sys.exit('--pct must be within 0..100')
 
     xdf = XDF(args.xdf)
     buf_probe = load_bin(args.bin)

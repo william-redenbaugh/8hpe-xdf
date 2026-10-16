@@ -56,13 +56,13 @@ class App(tk.Tk):
         ctl = ttk.LabelFrame(self, text='Raise shift pressure', padding=(10, 8))
         ctl.pack(fill='x', padx=10)
         self.level = tk.StringVar(value='sport')
-        for name in ('mild', 'sport', 'max'):
+        for name in ('mild', 'sport', 'max', 'firm', 'hard'):
             ttk.Radiobutton(ctl, text=f'{name}  (+{xdf_stage3.LEVELS[name]}%)',
                             variable=self.level, value=name,
                             command=self._level_changed).pack(side='left', padx=(0, 12))
         ttk.Label(ctl, text='or exact %:').pack(side='left', padx=(12, 4))
         self.pct = tk.DoubleVar(value=float(xdf_stage3.LEVELS['sport']))
-        self.scale = ttk.Scale(ctl, from_=0, to=50, variable=self.pct,
+        self.scale = ttk.Scale(ctl, from_=0, to=100, variable=self.pct,
                                command=lambda _e: self._pct_changed(), length=220)
         self.scale.pack(side='left')
         self.pct_lbl = ttk.Label(ctl, width=6)
