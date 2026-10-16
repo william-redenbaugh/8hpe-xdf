@@ -9,6 +9,7 @@ and verification FAILS (exit code 1).
 
   xdf_verify.py XDF stock.bin tuned.bin
   xdf_verify.py XDF stock.bin tuned.bin --allow-axis   # axis edits intended
+  xdf_verify.py XDF stock.bin tuned.bin --allow-patch  # an XDF patch applied
   xdf_verify.py XDF stock.bin tuned.bin -v             # list every change
 
 Checks:
@@ -17,7 +18,10 @@ Checks:
      ZFADINFO identification block @0x190000, the calibration-ID /
      signature tail at the end of the cal block
   3. every changed byte falls inside a known XDF item's z span
-     (axis spans only count as explained with --allow-axis)
+     (axis spans only count as explained with --allow-axis; XDFPATCH spans
+     only with --allow-patch, and then only where the tuned bytes are
+     byte-for-byte the patch data the XDF declares, so a patch counts as
+     explained when it was applied exactly and not otherwise)
   4. all pedal/axis arrays of shift-line items are unchanged and still
      strictly monotonic in the tuned bin
   5. hysteresis: no downshift line cell rose above its matching upshift
@@ -83,6 +87,30 @@ def coverage_mask(xdf, include_axes):
     return mask
 
 
+def applied_patch_mask(xdf, tuned):
+    """mask over the file: 1 where an XDFPATCH entry was applied exactly.
+
+    An entry only contributes if the tuned image holds its declared patch
+    data over the whole span. A half-written or creatively-written patch
+    span stays unexplained, so this cannot be used to wave through arbitrary
+    bytes that happen to sit near a patch - only a faithful application of a
+    patch the XDF itself carries.
+    """
+    mask = bytearray(CAL_END)
+    applied = []
+    for patch in xdf.patches:
+        for e in patch.entries:
+            n = len(e.patchdata)
+            if not n or e.address is None or e.address + n > CAL_END:
+                continue
+            if bytes(tuned[e.address:e.address + n]) != e.patchdata:
+                continue
+            for k in range(n):
+                mask[e.address + k] = 1
+            applied.append((patch.title, e.name, e.address, n))
+    return mask, applied
+
+
 def changed_ranges(a, b):
     out = []
     i, n = 0, min(len(a), len(b))
@@ -105,6 +133,11 @@ def main():
     ap.add_argument('tuned')
     ap.add_argument('--allow-axis', action='store_true',
                     help='axis-data edits are intended (Bulk edit of axes)')
+    ap.add_argument('--allow-patch', action='store_true',
+                    help='an XDFPATCH from this XDF was applied on purpose '
+                         '(e.g. True manual); its bytes count as explained '
+                         'only where they exactly match the declared patch '
+                         'data')
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('--any-calibration', action='store_true',
                     help='downgrade a calibration-identity mismatch to a warning '
@@ -152,17 +185,22 @@ def main():
                          f'({", ".join(f"0x{i:X}..0x{j:X}" for i, j in bad)})')
 
     mask = coverage_mask(xdf, include_axes=args.allow_axis)
+    pmask, applied = (applied_patch_mask(xdf, tuned) if args.allow_patch
+                      else (bytearray(CAL_END), []))
     orphan = []
-    explained_bytes = 0
+    explained_bytes = patched_bytes = 0
     for i, j in ranges:
         pos = i
         while pos < j:
             if mask[pos]:
                 explained_bytes += 1
                 pos += 1
+            elif pmask[pos]:
+                patched_bytes += 1
+                pos += 1
             else:
                 end = pos
-                while end < j and not mask[end]:
+                while end < j and not mask[end] and not pmask[end]:
                     end += 1
                 orphan.append((pos, end))
                 pos = end
@@ -225,6 +263,15 @@ def main():
             break
 
     print(f'{explained_bytes} changed byte(s) inside XDF-covered element data')
+    if args.allow_patch:
+        names = sorted({f'{title} / {name}' for title, name, a, n in applied
+                        if any(i <= a < j for i, j in ranges)})
+        print(f'{patched_bytes} changed byte(s) inside exactly-applied '
+              f'XDFPATCH entries [--allow-patch]')
+        for n in names[:10]:
+            print(f'    {n}')
+        if len(names) > 10:
+            print(f'    ... and {len(names) - 10} more entries')
 
     for w in warns[:10]:
         print('WARN:', w)

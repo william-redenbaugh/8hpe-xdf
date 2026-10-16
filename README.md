@@ -32,6 +32,7 @@ addresses in the XDF are file offsets.
 | `tools/xdf_stage3.py` | Raise shift pressure using the maps a stage-3 tune touches. |
 | `tools/xdf_verify.py` | Prove a modified bin changes nothing it shouldn't. Run before flashing. |
 | `tools/xdf_gearbias.py` | Pick a higher (or lower) gear when you plant the throttle. |
+| `tools/xdf_blip.py` | Blip the throttle harder on downshifts. |
 | `tools/xdf_gui.py` | The same thing with a window; start it with `./run.sh`. |
 | `tools/xdflib.py` | The XDF parser the tools share. |
 
@@ -113,6 +114,27 @@ stock.
 above its upshift line without the box downshifting and immediately upshifting again, so the tool
 caps it and says so. Holding a lower gear really means raising the **upshift** lines, which is a
 different change.
+
+## Downshift blip
+
+On a downshift the TCU asks the engine for a burst of torque to match revs. A bigger blip closes the
+speed gap sooner, so the clutch engages earlier and the shift feels crisper.
+
+```sh
+python3 xdf_blip.py /path/to/stock.bin --preview
+python3 xdf_blip.py /path/to/stock.bin -o tuned.bin            # +15%
+python3 xdf_blip.py /path/to/stock.bin -o tuned.bin --pct 30 --pairs 4to3,5to4
+```
+
+The encoding is documented in the XDF itself: `torque request (Nm) = z * 6 - 768`, so `z = 128` is
+exactly zero and the blip is `(z - 128) * 6` Nm. Only the amount **above** 128 is scaled — cells
+asking for no blip stay at zero rather than being pushed up by a percentage — and the preview
+reports peak blip in Nm.
+
+Left alone on purpose: the `_scale`, `_outgrad_scale` and `_coolant_scale` maps, which are
+multipliers and gates rather than torque; and two maps the XDF declares 16-bit while describing u8
+content, where the definition is wrong and writing through it would hit the wrong bytes. The tool
+lists what it skipped.
 
 ## Before you flash
 
