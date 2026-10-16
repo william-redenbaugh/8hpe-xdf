@@ -48,13 +48,23 @@ entirely.
 ./run.sh
 ```
 
-Then **Open bin...** and pick a panel: **Shift pressure** (a level or an exact percentage),
-**Wheel circumference** (a tyre size or millimetres), **Differential** (your real axle ratio against
-the list the TCU snaps to, and the trim that corrects a wrong learned value) or **True manual**
-(the XDF's patch, on or off). **Preview** shows what would change, **Apply** changes the copy in
-memory, **Check bin** runs the gate and **Save As...** writes it. Nothing reaches disk until you
-save, and **Undo** steps back through every change. The calibration identity is checked the moment
-a bin is opened and shown top-right; if it does not match, editing stays blocked.
+Seven panels, one per thing you might change:
+
+| Panel | What it does |
+|---|---|
+| Shift pressure | Firmness, with converter lockup riding along at half strength |
+| Shift points | When it shifts, **per drive mode** |
+| Kickdown gear | Which gear a planted throttle drops to |
+| Downshift blip | Rev-match blip strength (all modes) |
+| Wheel circumference | Rolling circumference, from a tyre size or millimetres |
+| Differential | Your axle ratio against the list the TCU snaps to, and the trim that corrects a wrong learned value |
+| True manual | The XDF's patch, on or off |
+
+**Open bin...**, set a panel, **Preview** to see what would change, **Apply** to change the copy in
+memory, **Check bin** to run the gate, **Save As...** to write it. Nothing reaches disk until you
+save, and **Undo** steps back through every change from any panel. The calibration identity is
+checked the moment a bin is opened and shown top-right; if it does not match, every Apply is
+blocked.
 
 `run.sh` picks a Python whose Tk actually works - Apple's `/usr/bin/python3` ships Tk 8.5, which
 recent macOS refuses to start, so a Homebrew Python with `brew install python-tk` is preferred when
