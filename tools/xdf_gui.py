@@ -16,6 +16,12 @@ Features:
     characteristics and gear pairs together (upshifts, optionally dragging
     the matching downshift lines along to preserve hysteresis). 8000-rpm
     "shift disabled" sentinels are never touched.
+  * Drive modes: a Modes tab assigns shift characteristics to Normal/Sport
+    (saved to e84_modes.json next to the XDF, shared with xdf_tune --mode);
+    the shift-speed slider and the NA redline / early-upshift presets can
+    then target one mode. Quickness stays global (shared execution tables).
+  * TCC lockup preset: one slider scaling the converter close time down and
+    the close pressure / ramp rate up for faster lockup (global maps).
   * Undo stack, change list vs. the loaded original, save-as (never in place).
 
 Checksums are NOT corrected - run the saved bin through your checksum flow
@@ -27,8 +33,10 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from xdflib import (XDF, decode_axis, decode_constant, decode_table,
-                    element_offset, load_bin, write_elem)
+import xdf_tune
+from xdflib import (XDF, MODES_FILENAME, chars_for_mode, decode_axis,
+                    decode_constant, decode_table, element_offset, load_bin,
+                    load_mode_groups, save_mode_groups, write_elem)
 
 SENTINEL_DEFAULT = 7900  # raw values >= this are treated as "disabled" markers
 UP_CURVE = re.compile(r'^Upshift char (\d+): (\d)>(\d)$')
@@ -129,6 +137,146 @@ class Workspace:
             self.undo_stack.append((f'revert {item.title}', patch))
 
 
+# ------------------------------------------------------------------ presets
+# Plain write-builders shared by the preset tabs: they read ws.work and
+# return [(emb, rows, cols, r, c, value), ...] for Workspace.set_cells, so
+# applies go through the undo stack and the same code runs headless (tests).
+# Curve selection is xdf_tune's, so GUI edits land on exactly the cells the
+# CLI would touch (dead 0-rpm slots and 8000 sentinels are never moved).
+
+_MODE_CACHE = {}
+
+
+def mode_chars(xdf_path, mode):
+    """Resolve a drive-mode radio to a chars filter like the CLI --mode does:
+    returns (chars_set_or_None, error). None = no filter ('all'). The
+    unassigned-sport error is returned rather than raised so Tk callbacks can
+    show it without killing the mainloop; results are cached on the modes
+    file's mtime (the 'normal' default rescans the XDF, which is not free)."""
+    if mode in (None, 'all'):
+        return None, None
+    mpath = os.path.join(os.path.dirname(os.path.abspath(xdf_path)),
+                         MODES_FILENAME)
+    try:
+        key = (os.path.abspath(xdf_path), mode, os.path.getmtime(mpath))
+    except OSError:
+        key = (os.path.abspath(xdf_path), mode, None)
+    if key not in _MODE_CACHE:
+        try:
+            _MODE_CACHE[key] = (chars_for_mode(xdf_path, mode), None)
+        except SystemExit as e:
+            _MODE_CACHE[key] = (None, str(e))
+        except (OSError, ValueError) as e:
+            _MODE_CACHE[key] = (None, f'cannot read mode groups: {e}')
+    return _MODE_CACHE[key]
+
+
+def xdf_shift_chars(xdf):
+    """Sorted shift-characteristic numbers named by the XDF's shift lines."""
+    chars = set()
+    for t in xdf.tables:
+        m = UP_CURVE.match(t.title) or DN_CURVE.match(t.title)
+        if m:
+            chars.add(int(m.group(1)))
+    return sorted(chars)
+
+
+def shift_offset_writes(ws, amount, pairs=None, chars=None, move_down=True):
+    """Move the selected shift lines by `amount` output rpm; returns
+    (writes, curve_count)."""
+    kinds = ('up', 'down') if move_down else ('up',)
+    curves = xdf_tune.shift_curves(ws.xdf, kinds, pairs, chars)
+    writes = []
+    for t, _k, _ch, _p in curves:
+        rows, cols = t.shape()
+        emb = t.z.embedded
+        d = decode_table(ws.work, t)
+        for r in range(rows):
+            for c in range(cols):
+                v = d['z'][r][c]
+                if v <= 0 or v >= SENTINEL_DEFAULT:
+                    continue
+                writes.append((emb, rows, cols, r, c, max(0, v + amount)))
+    return writes, len(curves)
+
+
+def redline_hold_writes(ws, targets, chars=None):
+    """Raise upshift lines to per-pair target output rpm (never lower them).
+    targets = {'1>2': rpm, ...}; returns (writes, per-pair counts)."""
+    writes, counts = [], {p: 0 for p in targets}
+    for t, _k, _ch, pair in xdf_tune.shift_curves(ws.xdf, ('up',),
+                                                  set(targets), chars):
+        rows, cols = t.shape()
+        emb = t.z.embedded
+        d = decode_table(ws.work, t)
+        tgt = targets[pair]
+        for r in range(rows):
+            for c in range(cols):
+                v = d['z'][r][c]
+                if v <= 0 or v >= SENTINEL_DEFAULT or tgt <= v:
+                    continue
+                writes.append((emb, rows, cols, r, c, tgt))
+                counts[pair] += 1
+    return writes, counts
+
+
+def early_upshift_writes(ws, amount, chars=None):
+    """Pedal-weighted early upshift (full at closed throttle, zero from 80%
+    pedal), clamped >= matching downshift + 100. Returns (writes, clamped)."""
+    down = {(ch, p): t for t, _k, ch, p
+            in xdf_tune.shift_curves(ws.xdf, ('down',), chars=chars)}
+    writes, clamped = [], 0
+    for t, _k, ch, pair in xdf_tune.shift_curves(ws.xdf, ('up',), chars=chars):
+        rows, cols = t.shape()
+        emb = t.z.embedded
+        d = decode_table(ws.work, t)
+        pedal = d['x'] if d['x'] and isinstance(d['x'][0], (int, float)) else None
+        dt = down.get((ch, pair))
+        try:
+            dvals = decode_table(ws.work, dt)['z'] if dt is not None else None
+        except (ValueError, IndexError):
+            dvals = None
+        for r in range(rows):
+            for c in range(cols):
+                v = d['z'][r][c]
+                if v <= 0 or v >= SENTINEL_DEFAULT:
+                    continue
+                p = pedal[c] if pedal and c < len(pedal) else 0
+                weight = max(0.0, 1 - p / 800.0)
+                if weight <= 0:
+                    continue
+                new = v - amount * weight
+                if dvals is not None and r < len(dvals):
+                    dv = dvals[r][c]
+                    if 0 < dv < SENTINEL_DEFAULT and new < dv + 100:
+                        new = dv + 100
+                        clamped += 1
+                new = max(0, round(new))
+                if new != v:
+                    writes.append((emb, rows, cols, r, c, new))
+    return writes, clamped
+
+
+def tcc_lockshift_writes(ws, pct):
+    """Run xdf_tune.op_tcc_lockshift on a COPY of the working bin and turn
+    the deltas into set_cells writes. Returns (writes, done) with done =
+    [(title, pct, changed, cells), ...] straight from the op."""
+    tmp = bytearray(ws.work)
+    done = xdf_tune.op_tcc_lockshift(tmp, ws.xdf, pct)
+    writes = []
+    for title, _p, _n, _cells in done:
+        t = next(t for t in ws.xdf.tables if t.title == title)
+        rows, cols = t.shape()
+        emb = t.z.embedded
+        old = decode_table(ws.work, t)['z']
+        new = decode_table(tmp, t)['z']
+        for r in range(rows):
+            for c in range(cols):
+                if new[r][c] != old[r][c]:
+                    writes.append((emb, rows, cols, r, c, new[r][c]))
+    return writes, done
+
+
 class App(tk.Tk):
     def __init__(self, xdf_path, bin_path=None):
         super().__init__()
@@ -184,6 +332,7 @@ class App(tk.Tk):
         self.bulk_cat.set('(all)')
         self.title(f'8HP XDF editor - {path.rsplit("/", 1)[-1]}')
         self._refresh_list()
+        self._modes_refresh()
         self._set_status(f'XDF: {path} ({len(self.ws.xdf.items)} items). '
                          + (f'Editing {self.ws.bin_path}' if self.ws.work is not None
                             else 'Open a bin to start editing.'))
@@ -281,6 +430,8 @@ class App(tk.Tk):
         self._build_bulk_tab()
         self._build_shift_tab()
         self._build_na_tab()
+        self._build_tcc_tab()
+        self._build_modes_tab()
         self._build_vehicle_tab()
         self._build_changes_tab()
         self.tabs.bind('<<NotebookTabChanged>>', lambda e: (
@@ -531,6 +682,19 @@ class App(tk.Tk):
         self._show_selected()
 
     # -- shift speed preset -------------------------------------------------
+    def _mode_radio_row(self, parent, var, command=None):
+        """All/Normal/Sport radio row; groups are assigned in the Modes tab."""
+        row = ttk.Frame(parent)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text='Drive mode:').pack(side='left')
+        for text, val in (('All', 'all'), ('Normal', 'normal'),
+                          ('Sport', 'sport')):
+            ttk.Radiobutton(row, text=text, variable=var, value=val,
+                            command=command).pack(side='left', padx=2)
+        ttk.Label(row, text='(assign characteristics in the Modes tab)'
+                  ).pack(side='left', padx=8)
+        return row
+
     def _build_shift_tab(self):
         tab = ttk.Frame(self.tabs, padding=6)
         self.tabs.add(tab, text='Shift speed')
@@ -571,6 +735,9 @@ class App(tk.Tk):
                             command=self._shift_preview).grid(
                 row=n // 12, column=n % 12, padx=2)
 
+        self.shift_mode = tk.StringVar(value='all')
+        self._mode_radio_row(tab, self.shift_mode, self._shift_preview)
+
         self.shift_down = tk.BooleanVar(value=True)
         ttk.Checkbutton(tab, text='Move matching downshift lines too '
                                   '(preserves hysteresis)',
@@ -581,40 +748,30 @@ class App(tk.Tk):
         ttk.Button(tab, text='Apply shift offset',
                    command=self._shift_apply).pack(anchor='w')
 
-    def _shift_curves(self):
-        """Deduped per-gear-pair shift-line curves matching the selection."""
+    def _shift_chars(self):
+        """Checked characteristics intersected with the drive-mode radio."""
         chars = {n for n, v in self.char_vars.items() if v.get()}
-        pairs = {p for p, v in self.pair_vars.items() if v.get()}
-        up, down, seen = [], [], set()
-        for t in self.ws.xdf.tables:
-            emb = t.z.embedded if t.z else None
-            if not emb or emb.address is None or emb.address in seen:
-                continue
-            m = UP_CURVE.match(t.title)
-            kind = 'up'
-            if not m:
-                m = DN_CURVE.match(t.title)
-                kind = 'down'
-            if not m:
-                continue
-            char = int(m.group(1))
-            lo, hi = sorted((m.group(2), m.group(3)))
-            pair = f'{lo}>{hi}'
-            if char not in chars or pair not in pairs:
-                continue
-            seen.add(emb.address)
-            (up if kind == 'up' else down).append(t)
-        return up, down
+        mode_set, err = mode_chars(self.ws.xdf.path, self.shift_mode.get())
+        if err:
+            return None, err
+        return chars if mode_set is None else chars & mode_set, None
 
     def _shift_preview(self):
         amount = self.shift_amount.get()
         self.shift_label.config(text=f'{amount:+.0f} rpm')
-        up, down = self._shift_curves()
-        n = len(up) + (len(down) if self.shift_down.get() else 0)
+        chars, err = self._shift_chars()
+        if err:
+            self.shift_info.config(text=err)
+            return
+        pairs = {p for p, v in self.pair_vars.items() if v.get()}
+        kinds = ('up', 'down') if self.shift_down.get() else ('up',)
+        curves = xdf_tune.shift_curves(self.ws.xdf, kinds, pairs, chars)
+        up = sum(1 for _t, k, _ch, _p in curves if k == 'up')
+        down = len(curves) - up
         self.shift_info.config(
-            text=f'{len(up)} upshift lines'
-                 + (f' + {len(down)} downshift lines' if self.shift_down.get() else '')
-                 + f' selected ({n} curves x 15 pedal points). '
+            text=f'{up} upshift lines'
+                 + (f' + {down} downshift lines' if self.shift_down.get() else '')
+                 + f' selected ({len(curves)} curves x 15 pedal points). '
                    f'Offset {amount:+.0f} rpm.')
 
     def _shift_apply(self):
@@ -624,23 +781,17 @@ class App(tk.Tk):
         amount = self.shift_amount.get()
         if not amount:
             return
-        up, down = self._shift_curves()
-        targets = up + (down if self.shift_down.get() else [])
-        writes = []
-        for t in targets:
-            rows, cols = t.shape()
-            emb = t.z.embedded
-            d = decode_table(self.ws.work, t)
-            for r in range(rows):
-                for c in range(cols):
-                    v = d['z'][r][c]
-                    if v >= SENTINEL_DEFAULT:
-                        continue
-                    writes.append((emb, rows, cols, r, c, max(0, v + amount)))
-        n = self.ws.set_cells(f'shift speed {amount:+.0f} rpm '
-                              f'({len(targets)} lines)', writes)
+        chars, err = self._shift_chars()
+        if err:
+            messagebox.showerror('Sport chars not assigned', err)
+            return
+        pairs = {p for p, v in self.pair_vars.items() if v.get()}
+        writes, curves = shift_offset_writes(self.ws, amount, pairs, chars,
+                                             self.shift_down.get())
+        n = self.ws.set_cells(f'shift speed {amount:+.0f} rpm ({curves} lines, '
+                              f'{self.shift_mode.get()} mode)', writes)
         self._set_status(f'Shift offset applied: {n} cell(s) across '
-                         f'{len(targets)} lines. Sentinels untouched.')
+                         f'{curves} lines. Sentinels untouched.')
         self._show_selected()
 
     # -- NA presets ----------------------------------------------------------
@@ -662,6 +813,10 @@ class App(tk.Tk):
             'faster. Firmer feel, more clutch heat per shift; change in small '
             'steps and let adaptation settle between changes.'),
             wraplength=740, justify='left').pack(anchor='w')
+        ttk.Label(q, text=(
+            'Applies to all drive modes - the 8HP uses shared execution-time '
+            'tables (K1/K2 are clutches, not programs).'),
+            wraplength=740, justify='left').pack(anchor='w')
         row = ttk.Frame(q)
         row.pack(fill='x', pady=2)
         ttk.Label(row, text='Faster by:').pack(side='left')
@@ -678,8 +833,8 @@ class App(tk.Tk):
         r = ttk.LabelFrame(tab, text='Hold 1st-3rd to redline', padding=6)
         r.pack(fill='x', pady=4)
         ttk.Label(r, text=(
-            'Raises the 1>2, 2>3 and 3>4 upshift lines of ALL 23 '
-            'characteristics so those gears run to engine redline before '
+            'Raises the 1>2, 2>3 and 3>4 upshift lines (characteristics per '
+            'the drive-mode radio below) so those gears run to redline before '
             'upshifting. Shift lines are OUTPUT-shaft rpm, so the target per '
             'gear is redline / gear ratio (ratios editable below; defaults '
             'are 8HP45). Values only ever get raised (never lowered), 8000 '
@@ -702,6 +857,8 @@ class App(tk.Tk):
             var = tk.StringVar(value=default)
             self.ratio_vars[gear] = var
             ttk.Entry(row2, textvariable=var, width=6).pack(side='left')
+        self.redline_mode = tk.StringVar(value='all')
+        self._mode_radio_row(r, self.redline_mode)
         self.redline_info = ttk.Label(r, text='', wraplength=740, justify='left')
         self.redline_info.pack(anchor='w')
         ttk.Button(r, text='Apply redline hold',
@@ -713,7 +870,8 @@ class App(tk.Tk):
         ttk.Label(e, text=(
             'An NA engine has instant response, so part-throttle upshifts can '
             'come earlier: this lowers every upshift line (all gear pairs, '
-            'all characteristics) by up to the slider amount, weighted by '
+            'characteristics per the drive-mode radio) by up to the slider '
+            'amount, weighted by '
             'pedal - full effect at closed throttle, fading to zero at 80% '
             'pedal, kickdown untouched. Each point is clamped to stay at '
             'least 100 rpm above its matching downshift line so the box '
@@ -728,6 +886,8 @@ class App(tk.Tk):
             side='left', fill='x', expand=True, padx=8)
         self.early_label = ttk.Label(row3, text='0 rpm', width=18)
         self.early_label.pack(side='left')
+        self.early_mode = tk.StringVar(value='all')
+        self._mode_radio_row(e, self.early_mode)
         ttk.Button(e, text='Apply early upshift',
                    command=self._early_apply).pack(anchor='w', pady=2)
 
@@ -795,35 +955,16 @@ class App(tk.Tk):
         except ValueError:
             messagebox.showerror('Bad value', 'Redline, margin and ratios must be numbers.')
             return
+        chars, err = mode_chars(self.ws.xdf.path, self.redline_mode.get())
+        if err:
+            messagebox.showerror('Sport chars not assigned', err)
+            return
         targets = {pair: round(redline * (1 - margin) / ratio)
                    for pair, ratio in ratios.items()}
-        writes = []
-        counts = {p: 0 for p in targets}
-        seen = set()
-        for t in self.ws.xdf.tables:
-            m = UP_CURVE.match(t.title)
-            if not m:
-                continue
-            pair = f'{m.group(2)}>{m.group(3)}'
-            if pair not in targets:
-                continue
-            emb = t.z.embedded
-            if emb.address in seen:
-                continue
-            seen.add(emb.address)
-            rows, cols = t.shape()
-            d = decode_table(self.ws.work, t)
-            for r in range(rows):
-                for c in range(cols):
-                    v = d['z'][r][c]
-                    if v <= 0 or v >= SENTINEL_DEFAULT:   # dead slot / disabled
-                        continue
-                    new = max(v, targets[pair])
-                    if new != v:
-                        writes.append((emb, rows, cols, r, c, new))
-                        counts[pair] += 1
+        writes, counts = redline_hold_writes(self.ws, targets, chars)
         n = self.ws.set_cells(
-            f'redline hold 1st-3rd @{redline:.0f}rpm', writes)
+            f'redline hold 1st-3rd @{redline:.0f}rpm '
+            f'({self.redline_mode.get()} mode)', writes)
         self.redline_info.config(
             text='Targets (output rpm): '
                  + ', '.join(f'{p}: {v}' for p, v in targets.items())
@@ -841,63 +982,161 @@ class App(tk.Tk):
         amount = self.early_amount.get()
         if not amount:
             return
-        # index down curves by (char, pair) for the anti-hunting clamp
-        down = {}
-        for t in self.ws.xdf.tables:
-            m = DN_CURVE.match(t.title)
-            if m:
-                lo, hi = sorted((m.group(2), m.group(3)))
-                down[(int(m.group(1)), f'{lo}>{hi}')] = t
-        writes = []
-        seen = set()
-        clamped = 0
-        for t in self.ws.xdf.tables:
-            m = UP_CURVE.match(t.title)
-            if not m:
-                continue
-            emb = t.z.embedded
-            if emb.address in seen:
-                continue
-            seen.add(emb.address)
-            char = int(m.group(1))
-            pair = f'{m.group(2)}>{m.group(3)}'
-            rows, cols = t.shape()
-            d = decode_table(self.ws.work, t)
-            # single shift-line curves are 1x15: pedal breakpoints run along x
-            pedal = d['x'] if d['x'] and isinstance(d['x'][0], (int, float)) else None
-            dt = down.get((char, pair))
-            dvals = None
-            if dt is not None:
-                try:
-                    dvals = decode_table(self.ws.work, dt)['z']
-                except (ValueError, IndexError):
-                    dvals = None
-            for r in range(rows):
-                for c in range(cols):
-                    v = d['z'][r][c]
-                    if v <= 0 or v >= SENTINEL_DEFAULT:   # dead slot / disabled
-                        continue
-                    p = pedal[c] if pedal and c < len(pedal) else 0
-                    weight = max(0.0, 1 - p / 800.0)
-                    if weight <= 0:
-                        continue
-                    new = v - amount * weight
-                    if dvals is not None:
-                        dv = dvals[r][c] if r < len(dvals) else None
-                        if dv is not None and dv < SENTINEL_DEFAULT:
-                            floor = dv + 100
-                            if new < floor:
-                                new = floor
-                                clamped += 1
-                    new = max(0, round(new))
-                    if new != v:
-                        writes.append((emb, rows, cols, r, c, new))
-        n = self.ws.set_cells(f'early upshift -{amount:.0f}rpm (pedal-weighted)',
-                              writes)
+        chars, err = mode_chars(self.ws.xdf.path, self.early_mode.get())
+        if err:
+            messagebox.showerror('Sport chars not assigned', err)
+            return
+        writes, clamped = early_upshift_writes(self.ws, amount, chars)
+        n = self.ws.set_cells(f'early upshift -{amount:.0f}rpm (pedal-weighted, '
+                              f'{self.early_mode.get()} mode)', writes)
         self.na_info.config(
             text=f'Early upshift: {n} cells lowered (pedal-weighted, '
                  f'{clamped} clamped to downshift line + 100 rpm).')
         self._show_selected()
+
+    # -- TCC lockup ----------------------------------------------------------
+    def _build_tcc_tab(self):
+        tab = ttk.Frame(self.tabs, padding=6)
+        self.tabs.add(tab, text='TCC lockup')
+        ttk.Label(tab, text=(
+            'Lockup speed: scales the converter close time DOWN and the '
+            'close-pressure ramp rate UP by the slider amount, and the close '
+            'pressure UP by half of it, so the lockup clutch applies faster '
+            'around shifts. These maps are GLOBAL - they apply to all drive '
+            'modes; mode-specific lockup lives in strategy tables that need '
+            'a full flash read. Table identification is MED/LOW confidence '
+            'from the decompile: change in small steps, reset TCC adaptation '
+            'after flashing, and watch for low-rpm shudder.'),
+            wraplength=760, justify='left').pack(anchor='w')
+        row = ttk.Frame(tab)
+        row.pack(fill='x', pady=8)
+        ttk.Label(row, text='Lockup speed:').pack(side='left')
+        self.tcc_amount = tk.DoubleVar(value=0)
+        ttk.Scale(row, from_=0, to=40, variable=self.tcc_amount,
+                  command=lambda v: self._tcc_slider()).pack(
+            side='left', fill='x', expand=True, padx=8)
+        self.tcc_label = ttk.Label(row, text='0 %', width=24)
+        self.tcc_label.pack(side='left')
+        btns = ttk.Frame(tab)
+        btns.pack(fill='x', pady=2)
+        ttk.Button(btns, text='Preview', command=self._tcc_preview).pack(side='left')
+        ttk.Button(btns, text='Apply TCC lockup',
+                   command=self._tcc_apply).pack(side='left', padx=4)
+        self.tcc_info = ttk.Label(tab, text='', wraplength=760, justify='left')
+        self.tcc_info.pack(anchor='w', pady=4)
+
+    def _tcc_slider(self):
+        pct = self.tcc_amount.get()
+        self.tcc_label.config(text=f'{pct:.0f} % (pressure +{pct / 2:.0f} %)')
+
+    def _tcc_preview(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        writes, done = tcc_lockshift_writes(self.ws, self.tcc_amount.get())
+        if not done:
+            self.tcc_info.config(text='Nothing to change: slider at 0 %, or '
+                                      'none of the TCC tables are in this XDF.')
+            return
+        self.tcc_info.config(
+            text='Preview (nothing written):\n' + '\n'.join(
+                f'  {title}: {p:+.1f}% on {n}/{cells} cells'
+                for title, p, n, cells in done)
+            + f'\n{len(done)} of 4 target tables in this XDF, '
+              f'{len(writes)} cells would change.')
+
+    def _tcc_apply(self):
+        if self.ws.work is None:
+            messagebox.showinfo('No bin', 'Open a bin first.')
+            return
+        pct = self.tcc_amount.get()
+        if not pct:
+            return
+        writes, done = tcc_lockshift_writes(self.ws, pct)
+        n = self.ws.set_cells(f'TCC lockup {pct:.0f}%', writes)
+        self.tcc_info.config(
+            text=f'Applied {pct:.0f}%: {n} cells changed ('
+                 + ', '.join(f'{t} {p:+.1f}%' for t, p, _n, _c in done)
+                 + '). Global - all drive modes. Reset TCC adaptation after '
+                   'flashing.')
+        self._show_selected()
+
+    # -- drive-mode assignment -----------------------------------------------
+    def _build_modes_tab(self):
+        tab = ttk.Frame(self.tabs, padding=6)
+        self.tabs.add(tab, text='Modes')
+        ttk.Label(tab, text=(
+            'Assign shift characteristics to drive modes. The char-to-mode '
+            'mapping (which characteristic the Sport program selects) lives '
+            'in the program ROM, not in this calibration read, so it cannot '
+            'be recovered here: identify the Sport chars by logging while '
+            'toggling modes, then select them below and toggle. Everything '
+            'not Sport counts as Normal. Save writes e84_modes.json next to '
+            'the XDF - the Normal/Sport radios on the other tabs and '
+            'xdf_tune --mode read that file.'),
+            wraplength=760, justify='left').pack(anchor='w')
+        wrap = ttk.Frame(tab)
+        wrap.pack(fill='both', expand=True, pady=4)
+        self.modes_list = tk.Listbox(wrap, selectmode='extended',
+                                     exportselection=False)
+        sb = ttk.Scrollbar(wrap, command=self.modes_list.yview)
+        self.modes_list.config(yscrollcommand=sb.set)
+        self.modes_list.pack(side='left', fill='both', expand=True)
+        sb.pack(side='right', fill='y')
+        self.modes_list.bind('<Double-Button-1>', lambda e: self._modes_toggle())
+        btns = ttk.Frame(tab)
+        btns.pack(fill='x', pady=4)
+        ttk.Button(btns, text='Toggle Sport/Normal',
+                   command=self._modes_toggle).pack(side='left')
+        ttk.Button(btns, text='Save assignment',
+                   command=self._modes_save).pack(side='left', padx=4)
+        self.modes_info = ttk.Label(tab, text='', wraplength=760, justify='left')
+        self.modes_info.pack(anchor='w')
+        self._modes_refresh()
+
+    def _modes_refresh(self):
+        """(Re)load the saved mode groups for the current XDF into the list."""
+        if not hasattr(self, 'modes_list'):
+            return
+        self.modes_chars = xdf_shift_chars(self.ws.xdf)
+        try:
+            sport = load_mode_groups(self.ws.xdf.path)['sport']
+        except (OSError, ValueError):
+            sport = set()
+        self.mode_sport = sport & set(self.modes_chars)
+        self._modes_fill()
+
+    def _modes_fill(self):
+        sel = self.modes_list.curselection()
+        self.modes_list.delete(0, 'end')
+        for n in self.modes_chars:
+            tag = 'SPORT' if n in self.mode_sport else 'normal'
+            self.modes_list.insert('end', f'char {n:02d}   {tag}')
+        for i in sel:
+            self.modes_list.selection_set(i)
+        try:
+            saved = load_mode_groups(self.ws.xdf.path)['sport'] == self.mode_sport
+        except (OSError, ValueError):
+            saved = False
+        self.modes_info.config(
+            text=f'{len(self.modes_chars) - len(self.mode_sport)} normal / '
+                 f'{len(self.mode_sport)} sport'
+                 + ('.' if saved else '  -  UNSAVED, press Save to make the '
+                                      'Normal/Sport filters see it.'))
+
+    def _modes_toggle(self):
+        for i in self.modes_list.curselection():
+            self.mode_sport.symmetric_difference_update({self.modes_chars[i]})
+        self._modes_fill()
+
+    def _modes_save(self):
+        path = save_mode_groups(
+            self.ws.xdf.path,
+            {'sport': self.mode_sport,
+             'normal': set(self.modes_chars) - self.mode_sport})
+        self._modes_fill()
+        self._set_status(f'Mode groups saved to {path} '
+                         f'({len(self.mode_sport)} sport chars).')
 
     # -- vehicle (wheel / diff / converter) -----------------------------------
     def _build_vehicle_tab(self):

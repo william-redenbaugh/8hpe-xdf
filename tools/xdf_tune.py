@@ -23,11 +23,23 @@ flash tool correct them) before flashing.
                  suggest the circumference trim that makes learning land
   tcc-na         NA converter strategy: scale TCC slip targets / pedal
                  weighting / coast micro-slip (see n52k-tcc-optimization.md)
+  tcc-lockshift  faster converter lockup: scale tcc_close_time_map down and
+                 the close-pressure / ramp-rate maps up (global - the TCC
+                 close/open maps are not per drive mode)
   copy-tables    import named tables (e.g. the tcmodel K/mu converter model
                  from an N20 or N55 donor read) decoded via the donor's XDF
 
+Drive modes: shift-offset, redline-hold, sport-redline and early-upshift take
+--mode {all,normal,sport} (default all), resolved through e84_modes.json next
+to the XDF (chars_for_mode in xdflib; assign chars to modes after logging -
+the mapping lives in the program ROM, not the calibration). --mode intersects
+with --chars when both are given. quickness stays global by design: the 8HP
+shift-execution time tables are shared across drive programs (indexed by
+clutch K1/K2/K0 and torque, not by program).
+
 Examples:
   xdf_tune.py shift-offset  my.bin -o out.bin --rpm +300
+  xdf_tune.py shift-offset  my.bin -o out.bin --rpm +300 --mode sport
   xdf_tune.py quickness     my.bin -o out.bin --pct 15
   xdf_tune.py sport-redline my.bin -o out.bin --rpm 7000
   xdf_tune.py redline-hold  my.bin -o out.bin --redline 7000
@@ -35,6 +47,7 @@ Examples:
   xdf_tune.py wheel         my.bin -o out.bin --tire 245/40R18
   xdf_tune.py diff-check    my.bin --ratio 3.73 --learned 3.91 --fix -o out.bin
   xdf_tune.py tcc-na        my.bin -o out.bin --slip-pct -15 --pedal-pct -20
+  xdf_tune.py tcc-lockshift my.bin -o out.bin --pct 20
   xdf_tune.py copy-tables   my.bin -o out.bin --donor n20_read.bin \\
       --donor-xdf n20.xdf --tables tcmodel_K_curve,tcmodel_mu_curve
 """
@@ -44,7 +57,8 @@ import os
 import re
 import sys
 
-from xdflib import XDF, decode_table, decode_constant, element_offset, write_elem
+from xdflib import (XDF, chars_for_mode, decode_table, decode_constant,
+                    element_offset, write_elem)
 
 def _default_xdf():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -108,6 +122,15 @@ def edit_cells(buf, table, fn):
     return n
 
 
+def resolve_chars(xdf_path, mode, chars_arg=None):
+    """--mode group (from e84_modes.json) intersected with --chars, or None."""
+    explicit = {int(c) for c in chars_arg.split(',')} if chars_arg else None
+    mode_set = chars_for_mode(xdf_path, mode)
+    if mode_set is None or explicit is None:
+        return explicit if mode_set is None else mode_set
+    return mode_set & explicit
+
+
 def find_constant(xdf, needle):
     hits = [c for c in xdf.constants if needle.lower() in c.title.lower()]
     if len(hits) != 1:
@@ -155,12 +178,12 @@ def op_quickness(buf, xdf, pct):
     return total, tables
 
 
-def op_redline_hold(buf, xdf, redline, margin_pct, ratios):
+def op_redline_hold(buf, xdf, redline, margin_pct, ratios, chars=None):
     """ratios: {'1>2': r1st, '2>3': r2nd, '3>4': r3rd}"""
     targets = {p: round(redline * (1 - margin_pct / 100.0) / r)
                for p, r in ratios.items()}
     total = 0
-    for t, _k, _c, pair in shift_curves(xdf, ('up',), set(targets)):
+    for t, _k, _c, pair in shift_curves(xdf, ('up',), set(targets), chars):
         tgt = targets[pair]
         total += edit_cells(buf, t, lambda r, c, v, d:
                             None if (v <= 0 or v >= SENTINEL)
@@ -195,10 +218,10 @@ def op_sport_redline(buf, xdf, rpm, margin_pct, ratios, pedal_from, chars=None):
     return total, targets
 
 
-def op_early_upshift(buf, xdf, rpm):
-    down = {(c, p): t for t, _k, c, p in shift_curves(xdf, ('down',))}
+def op_early_upshift(buf, xdf, rpm, chars=None):
+    down = {(c, p): t for t, _k, c, p in shift_curves(xdf, ('down',), chars=chars)}
     total = clamped = 0
-    for t, _k, char, pair in shift_curves(xdf, ('up',)):
+    for t, _k, char, pair in shift_curves(xdf, ('up',), chars=chars):
         dt = down.get((char, pair))
         dvals = decode_table(buf, dt)['z'] if dt is not None else None
 
@@ -306,6 +329,42 @@ def op_tcc_na(buf, xdf, slip_pct=0, pedal_pct=0, negslip_pct=0):
     return done
 
 
+def _table_by_title(xdf, title):
+    """Exact-title table lookup; warn-and-skip (None) when absent or ambiguous
+    so TCC ops stay usable on XDFs where the RE names differ (e.g. E70)."""
+    hits = [t for t in xdf.tables if t.title == title]
+    if len(hits) != 1:
+        print(f'warning: {title}: {len(hits)} exact-title matches - skipped',
+              file=sys.stderr)
+        return None
+    return hits[0]
+
+
+def op_tcc_lockshift(buf, xdf, pct, firm_pct=None):
+    """Faster converter lockup around shifts: close time down by pct, drive
+    pressure-rate and ramp curves up by pct, close pressure up by firm_pct
+    (default pct/2). These maps are global - the E84 TCC close/open maps are
+    not per drive mode (MED confidence from the RE)."""
+    if firm_pct is None:
+        firm_pct = pct / 2
+    jobs = [('tcc_close_time_map', -pct),
+            ('tcc_press_rate_drive_curve', pct),
+            ('tcc_ramp_curve', pct),
+            ('tcc_close_press_map', firm_pct)]
+    done = []
+    for title, p in jobs:
+        t = _table_by_title(xdf, title)
+        if t is None or not p:
+            continue
+        factor = 1 + p / 100.0
+        n = edit_cells(buf, t, lambda r, c, v, d:
+                       None if v <= 0 else
+                       (v * factor if isinstance(v, float) else round(v * factor)))
+        rows, cols = t.shape()
+        done.append((title, p, n, rows * cols))
+    return done
+
+
 # ---------------------------------------------------------------- CLI
 
 def main():
@@ -318,11 +377,18 @@ def main():
         p.add_argument('bin')
         p.add_argument('-o', '--out', required=needs_out)
 
+    def mode_arg(p):
+        p.add_argument('--mode', choices=('all', 'normal', 'sport'),
+                       default='all',
+                       help='limit to a drive-mode char group assigned in '
+                            'e84_modes.json next to the XDF (default: all)')
+
     p = sub.add_parser('shift-offset')
     common(p)
     p.add_argument('--rpm', type=float, required=True)
     p.add_argument('--pairs', help='e.g. 1>2,2>3 (default: all)')
     p.add_argument('--chars', help='e.g. 0,1,2 (default: all 23)')
+    mode_arg(p)
     p.add_argument('--no-down', action='store_true',
                    help='do not drag the matching downshift lines along')
 
@@ -340,6 +406,7 @@ def main():
     p.add_argument('--pedal-from', type=float, default=400,
                    help='apply from this pedal permille up (default 400; 0 = everywhere)')
     p.add_argument('--chars', help='characteristic numbers, e.g. 8,9 (default: all)')
+    mode_arg(p)
 
     p = sub.add_parser('redline-hold')
     common(p)
@@ -348,11 +415,13 @@ def main():
     p.add_argument('--r1', type=float, default=4.714, help='1st gear ratio')
     p.add_argument('--r2', type=float, default=3.143)
     p.add_argument('--r3', type=float, default=2.106)
+    mode_arg(p)
 
     p = sub.add_parser('early-upshift')
     common(p)
     p.add_argument('--rpm', type=float, required=True,
                    help='reduction at closed throttle (0-800)')
+    mode_arg(p)
 
     p = sub.add_parser('wheel')
     common(p, needs_out=False)
@@ -376,6 +445,14 @@ def main():
     p.add_argument('--negslip-pct', type=float, default=0,
                    help='e.g. -50 halves coast micro-slip (tcc_neg_slip_curve)')
 
+    p = sub.add_parser('tcc-lockshift')
+    common(p)
+    p.add_argument('--pct', type=float, required=True,
+                   help='0-40: lockup speed - close time down, close pressure '
+                        'and ramp rate up by %%')
+    p.add_argument('--firm-pct', type=float,
+                   help='close-pressure increase %% (default: pct/2)')
+
     p = sub.add_parser('copy-tables')
     common(p)
     p.add_argument('--donor', required=True, help='donor bin (e.g. N20/N55 read)')
@@ -391,7 +468,7 @@ def main():
 
     if args.cmd == 'shift-offset':
         pairs = set(args.pairs.split(',')) if args.pairs else None
-        chars = {int(c) for c in args.chars.split(',')} if args.chars else None
+        chars = resolve_chars(args.xdf, args.mode, args.chars)
         n = op_shift_offset(buf, xdf, args.rpm, pairs, chars,
                             move_down=not args.no_down)
         print(f'shift-offset {args.rpm:+.0f} rpm: {n} cells changed')
@@ -399,7 +476,7 @@ def main():
         n, tables = op_quickness(buf, xdf, args.pct)
         print(f'quickness -{args.pct:.0f}%: {n} cells across {tables} time tables')
     elif args.cmd == 'sport-redline':
-        chars = ({int(x) for x in args.chars.split(',')} if args.chars else None)
+        chars = resolve_chars(args.xdf, args.mode, args.chars)
         n, targets = op_sport_redline(buf, xdf, args.rpm, args.margin,
                                       {'1>2': args.r1, '2>3': args.r2},
                                       args.pedal_from, chars)
@@ -408,14 +485,17 @@ def main():
         if args.rpm > 7100:
             print('warning: above the ~7100 rpm stock TCU guard', file=sys.stderr)
     elif args.cmd == 'redline-hold':
+        chars = resolve_chars(args.xdf, args.mode)
         n, targets = op_redline_hold(buf, xdf, args.redline, args.margin,
-                                     {'1>2': args.r1, '2>3': args.r2, '3>4': args.r3})
+                                     {'1>2': args.r1, '2>3': args.r2, '3>4': args.r3},
+                                     chars)
         print(f'redline-hold: targets (output rpm) {targets}; {n} cells raised')
         if args.redline >= 7100:
             print('warning: redline >= the ~7100 rpm stock TCU guard - apply '
                   'the True manual patch first', file=sys.stderr)
     elif args.cmd == 'early-upshift':
-        n, clamped = op_early_upshift(buf, xdf, args.rpm)
+        chars = resolve_chars(args.xdf, args.mode)
+        n, clamped = op_early_upshift(buf, xdf, args.rpm, chars)
         print(f'early-upshift -{args.rpm:.0f} rpm pedal-weighted: {n} cells '
               f'({clamped} clamped to downshift+100)')
     elif args.cmd == 'wheel':
@@ -449,6 +529,16 @@ def main():
             print(f'{title}: {pct:+.0f}% on {n} cells')
         print('REMINDER: reset TCC adaptation after flashing and probe for '
               'low-rpm shudder (see docs/analysis/n52k-tcc-optimization.md)')
+    elif args.cmd == 'tcc-lockshift':
+        if args.firm_pct is not None and not 0 <= args.firm_pct <= 40:
+            sys.exit('--firm-pct must be within 0-40')
+        if not 0 <= args.pct <= 40:
+            sys.exit('--pct must be within 0-40')
+        done = op_tcc_lockshift(buf, xdf, args.pct, args.firm_pct)
+        for title, pct, n, cells in done:
+            print(f'{title}: {pct:+.1f}% on {n}/{cells} cells')
+        print('note: these TCC maps are global (all drive modes); mode-specific '
+              'lockup lives in strategy tables that need a full flash read')
     elif args.cmd == 'copy-tables':
         donor_xdf = XDF(args.donor_xdf) if args.donor_xdf else xdf
         donor = bytearray(open(args.donor, 'rb').read())

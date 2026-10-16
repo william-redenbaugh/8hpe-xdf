@@ -18,9 +18,17 @@ Notes on this XDF specifically:
     That convention is what decode() implements; a different XDF generator
     may mean something else by these fields.
 
+Drive-mode groups: the char-to-drive-mode mapping (which shift characteristic
+a program like Sport selects) lives in the program ROM, not the calibration,
+so the user assigns it after logging. load_mode_groups/save_mode_groups keep
+that assignment in e84_modes.json next to the XDF; chars_for_mode resolves a
+mode name to a chars filter for shift-line edits.
+
 Use /usr/bin/python3 on macOS if your Homebrew python's expat is broken.
 """
 
+import json as _json
+import os as _os
 import re as _re
 import struct
 
@@ -392,6 +400,76 @@ def decode_table(buf, table):
 def decode_constant(buf, const):
     val = _read_elem(buf, const.embedded.address, const.embedded)
     return apply_equation(val, const.equation)
+
+
+# ---------------------------------------------------------- drive-mode groups
+
+MODES_FILENAME = 'e84_modes.json'
+_CHAR_TITLE = _re.compile(r'<title>(?:Up|Down)shift char (\d+):')
+
+
+def _modes_path(xdf_path):
+    return _os.path.join(_os.path.dirname(_os.path.abspath(xdf_path)),
+                         MODES_FILENAME)
+
+
+def _all_chars(xdf_path):
+    """Every shift-characteristic number named in the XDF (cheap text scan)."""
+    with open(xdf_path, errors='replace') as f:
+        return {int(m.group(1)) for m in _CHAR_TITLE.finditer(f.read())}
+
+
+def load_mode_groups(xdf_path):
+    """Robust wrapper: malformed e84_modes.json raises ValueError with guidance."""
+    try:
+        return _load_mode_groups_raw(xdf_path)
+    except (TypeError, AttributeError, KeyError) as e:
+        raise ValueError(
+            'e84_modes.json is malformed (expected {"sport": [ints], "normal": [ints]}): %s' % e)
+
+
+def _load_mode_groups_raw(xdf_path):
+    """{'sport': set, 'normal': set} of characteristic numbers, read from
+    e84_modes.json next to the XDF. Defaults when the file is missing:
+    normal = all chars in the XDF, sport = empty (unassigned)."""
+    path = _modes_path(xdf_path)
+    if not _os.path.exists(path):
+        return {'sport': set(), 'normal': _all_chars(xdf_path)}
+    with open(path) as f:
+        data = _json.load(f)
+    sport = {int(c) for c in data.get('sport', [])}
+    normal = {int(c) for c in data.get('normal', [])}
+    return {'sport': sport, 'normal': normal or (_all_chars(xdf_path) - sport)}
+
+
+def save_mode_groups(xdf_path, groups):
+    """Write mode groups ({'sport': iterable, 'normal': iterable}) to
+    e84_modes.json next to the XDF; returns the path written."""
+    path = _modes_path(xdf_path)
+    with open(path, 'w') as f:
+        _json.dump({k: sorted(int(c) for c in v) for k, v in groups.items()},
+                   f, indent=1)
+        f.write('\n')
+    return path
+
+
+def chars_for_mode(xdf_path, mode):
+    """Resolve a drive mode to a chars filter for shift-line edits:
+    'all' (or None) -> None (no filter), 'normal'/'sport' -> the assigned set.
+    Unassigned sport is a hard error, never a silent no-op: the mapping is not
+    recoverable from a calibration-only read, so the user must assign it."""
+    if mode in (None, 'all'):
+        return None
+    if mode not in ('normal', 'sport'):
+        raise ValueError(f'unknown mode {mode!r}')
+    chars = load_mode_groups(xdf_path)[mode]
+    if mode == 'sport' and not chars:
+        raise SystemExit(
+            'sport characteristics are not assigned yet: a calibration-only '
+            'read cannot recover which chars the Sport program selects. '
+            'Identify them by logging, then assign them in the GUI Modes '
+            f'panel or write {_modes_path(xdf_path)} like {{"sport": [8, 9]}}.')
+    return chars
 
 
 def load_bin(path, expect_size=None):
