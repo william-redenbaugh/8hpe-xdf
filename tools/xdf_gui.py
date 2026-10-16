@@ -97,6 +97,13 @@ class App(tk.Tk):
     def _build_pressure(self, nb):
         tab = ttk.Frame(nb, padding=(0, 8))
         nb.add(tab, text='Shift pressure')
+        ttk.Label(tab, wraplength=900, justify='left', text=(
+            'Applies to EVERY drive mode, and cannot be made per-mode on this ECU: the '
+            'module that sets shift pressure never receives the drive mode. Verified in '
+            'the program ROM - the strategy model knows D/S/M and decides which gear and '
+            'when, but the execution module decides how hard, and no mode value reaches '
+            'it. Raising this firms up D, S, M, reverse and creep alike.')
+        ).pack(anchor='w', padx=10, pady=(0, 6))
         ctl = ttk.LabelFrame(tab, text='Raise shift pressure', padding=(10, 8))
         ctl.pack(fill='x')
         self.level = tk.StringVar(value='sport')
@@ -172,9 +179,11 @@ class App(tk.Tk):
             'Moves WHEN it shifts, per drive mode - not how hard. The schedule exists 23 '
             'times over ("characteristics") and the drive mode selects which is live, so '
             'editing one mode leaves the rest alone. Positive upshift % holds gears '
-            'further up the rev range. Which characteristics your modes use is not in the '
-            'calibration: find them with "xdf_shiftpoints.py BIN --identify N" and record '
-            'them with --set-mode, or type them here.')).pack(anchor='w', padx=10)
+            'further up the rev range. The mode groups were recovered from the program '
+            'ROM: normal (D) = chars 0,1,4,5,6,13,14,20 and sport (S) = chars 2,8,15. '
+            'Two caveats: char 18 is reached by BOTH modes at full attack and so is in '
+            'neither group, and MANUAL ignores the shift lines entirely - in M the gear '
+            'comes from your request, so nothing here changes it (use True manual).')).pack(anchor='w', padx=10)
         ctl = ttk.LabelFrame(tab, text='Shift points', padding=(10, 8))
         ctl.pack(fill='x', padx=10, pady=(8, 0))
         row = ttk.Frame(ctl)

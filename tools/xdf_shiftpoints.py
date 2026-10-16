@@ -25,10 +25,33 @@ which is what stops the box hunting between two gears. Upshifts are capped so
 the engine speed they imply stays under --max-engine-rpm (the stock TCU guard
 is around 7100). Cells holding the disabled sentinel (>= 8000) are left alone.
 
-Which characteristics belong to which mode is NOT recorded in the calibration.
-strat_shift_char_index @0x1C9218 maps strategy state (0..99) to characteristic,
-but which states a mode occupies lives in the program ROM. You do not have to
-wait for that: --identify finds it by experiment.
+Which characteristic each mode uses was recovered from the program ROM of this
+calibration, so --mode works out of the box:
+
+    normal (D)  chars 0, 1, 4, 5, 6, 13, 14, 20
+    sport  (S)  chars 2, 8, 15
+
+The strategy state machine picks a state from a priority scan, and
+strat_shift_char_index @0x1C9218 maps that state to a characteristic. Which
+states are reachable depends on drive_program (0 = D, 1 = S, 2 = M) and on a
+0..5 driving-style level, so each mode walks its own ladder of characteristics
+as you drive harder: D goes 0 -> 4 -> 5 -> 6 -> 14, S goes 2 -> 2 -> 15 -> 8
+-> 8. Decoded shift lines agree - at every level the S characteristic upshifts
+later than the D one.
+
+Two things that mapping does NOT give you:
+
+  * Characteristic 18 is reached by BOTH D and S at the highest driving-style
+    level, so it is in neither group. Editing it changes both modes; pass
+    --chars 18 deliberately if that is what you want.
+  * M does not use the shift lines AT ALL. With drive_program == 2 the state
+    machine sits on states 2, 5 and 8, where strat_state_gear_sel_method is 1
+    rather than the 0 that selects the shift maps - the gear comes from your
+    request instead. Editing shift points changes nothing in manual. What
+    stops M upshifting for you at the guard speed is the True manual patch
+    (xdf_truemanual.py), not this tool.
+
+If your calibration differs, --identify still finds the mapping by experiment.
 
     xdf_shiftpoints.py stock.bin --identify 8 -o probe.bin
 
@@ -65,6 +88,17 @@ XDF_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            '..', '8hpe70_cali_v3.xdf')
 MODES_FILE = 'modes.json'
 
+# Recovered from the program ROM of b5yc1111/C118 by simulating the strategy
+# state machine's priority scan (FUN_00111214) over every legal combination of
+# condition bits, driving-style level and lever programme, then mapping the
+# chosen state through strat_shift_char_index @0x1C9218. Characteristic 18 is
+# deliberately in neither group: both D and S reach it at style level 5.
+BUILTIN_MODES = {
+    'normal': {0, 1, 4, 5, 6, 13, 14, 20},
+    'sport': {2, 8, 15},
+}
+SHARED_CHARS = {18}
+
 UP_RX = re.compile(r'^Upshift char (\d+): (\d)>(\d)$')
 DN_RX = re.compile(r'^Downshift char (\d+): (\d)>(\d)$')
 
@@ -93,13 +127,17 @@ def collect(xdf):
 
 
 def load_modes(xdf_path):
+    """Mode -> characteristics. modes.json beside the XDF wins over the
+    built-in mapping, so a different calibration can override it."""
     path = os.path.join(os.path.dirname(os.path.abspath(xdf_path)), MODES_FILE)
     if not os.path.exists(path):
-        return {}, path
+        return {k: set(v) for k, v in BUILTIN_MODES.items()}, path
     try:
         with open(path, encoding='utf-8') as f:
             raw = json.load(f)
-        return {k: {int(c) for c in v} for k, v in raw.items()}, path
+        merged = {k: set(v) for k, v in BUILTIN_MODES.items()}
+        merged.update({k: {int(c) for c in v} for k, v in raw.items()})
+        return merged, path
     except (ValueError, TypeError, AttributeError) as e:
         sys.exit(f'{path} is malformed (expected {{"sport": [ints], ...}}): {e}')
 
@@ -117,7 +155,8 @@ def cap_for(pair, kind, max_engine_rpm, ratios):
 
 
 def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
-         pedal_from=0.0, min_gap=150, max_engine_rpm=7000, ratios=None):
+         pedal_from=0.0, min_gap=150, max_engine_rpm=7000, min_engine_rpm=0,
+         ratios=None):
     """Apply the shift-point move to buf in place.
 
     Upshifts are done before downshifts so the anti-hunting guard measures
@@ -125,7 +164,7 @@ def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
     -> (changed_cells, lines_touched, capped_at_rev_limit, held_below_upshift)
     """
     ratios = ratios or RATIOS
-    changed = clamped_gap = clamped_rev = 0
+    changed = clamped_gap = clamped_rev = clamped_low = 0
     touched = set()
     for kind, pct, flat in (('up', up_pct, up_rpm), ('down', dn_pct, dn_rpm)):
         if not pct and not flat:
@@ -140,6 +179,8 @@ def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
             up_t = tables.get((ch, f'{pair.split(">")[1]}>{pair.split(">")[0]}', 'up'))
             up_z = decode_table(buf, up_t)['z'] if (kind == 'down' and up_t) else None
             cap = cap_for(pair, kind, max_engine_rpm, ratios) if kind == 'up' else None
+            floor = (cap_for(pair, kind, min_engine_rpm, ratios)
+                     if kind == 'up' and min_engine_rpm else None)
             for r in range(rows):
                 for c in range(cols):
                     v = d['z'][r][c]
@@ -153,6 +194,9 @@ def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
                     if cap is not None and new > cap:
                         new = cap
                         clamped_rev += 1
+                    if floor is not None and new < floor:
+                        new = floor
+                        clamped_low += 1
                     if up_z is not None:
                         u = up_z[r][c]
                         if 0 < u < SENTINEL and new > u - min_gap:
@@ -164,7 +208,7 @@ def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
                                    emb, new)
                         changed += 1
                         touched.add((ch, pair, kind))
-    return changed, len(touched), clamped_rev, clamped_gap
+    return changed, len(touched), clamped_rev, clamped_gap, clamped_low
 
 
 def main():
@@ -189,6 +233,9 @@ def main():
                     help='keep downshift lines this far below upshift (default 150)')
     ap.add_argument('--max-engine-rpm', type=float, default=7000,
                     help='cap implied engine speed (default 7000; TCU guard ~7100)')
+    ap.add_argument('--min-engine-rpm', type=float, default=1100,
+                    help='floor implied engine speed when lowering lines '
+                         '(default 1100; stock D already upshifts near 1400)')
     ap.add_argument('--ratios', help='override gear ratios, e.g. 1:4.7,2:3.1,...')
     ap.add_argument('--identify', type=int, metavar='CH',
                     help='make characteristic CH unmistakable (holds 2nd to the '
@@ -260,15 +307,20 @@ def main():
         chars = groups[args.mode]
     else:
         ap.error('say which characteristics: --mode or --chars')
+    if chars & SHARED_CHARS:
+        print(f'NOTE: characteristic(s) {sorted(chars & SHARED_CHARS)} are reached '
+              'by BOTH D and S at the highest driving-style level, so this edit '
+              'affects both modes, not one.')
     unknown = chars - set(all_chars)
     if unknown:
         sys.exit(f'no such characteristic(s): {sorted(unknown)} '
                  f'(this XDF has {all_chars[0]}..{all_chars[-1]})')
 
     buf = bytearray(stock)
-    changed, n_lines, clamped_rev, clamped_gap = plan(
+    changed, n_lines, clamped_rev, clamped_gap, clamped_low = plan(
         buf, tables, chars, args.up_pct, args.dn_pct, args.up_rpm, args.dn_rpm,
-        args.pedal_from, args.min_gap, args.max_engine_rpm, ratios)
+        args.pedal_from, args.min_gap, args.max_engine_rpm,
+        args.min_engine_rpm, ratios)
     touched_pairs = range(n_lines)
 
     print(f'characteristics {sorted(chars)}: upshift {args.up_pct:+g}%'
@@ -278,6 +330,8 @@ def main():
     print(f'{changed} cells changed across {len(touched_pairs)} lines')
     if clamped_rev:
         print(f'  {clamped_rev} cells capped at {args.max_engine_rpm:g} engine rpm')
+    if clamped_low:
+        print(f'  {clamped_low} cells floored at {args.min_engine_rpm:g} engine rpm')
     if clamped_gap:
         print(f'  {clamped_gap} downshift cells held {args.min_gap:g} rpm below '
               'their upshift line (anti-hunting)')

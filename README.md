@@ -53,7 +53,7 @@ Seven panels, one per thing you might change:
 | Panel | What it does |
 |---|---|
 | Shift pressure | Firmness, with converter lockup riding along at half strength |
-| Shift points | When it shifts, **per drive mode** |
+| Shift points | When it shifts, **per drive mode** (D and S; M ignores shift lines) |
 | Kickdown gear | Which gear a planted throttle drops to |
 | Downshift blip | Rev-match blip strength (all modes) |
 | Wheel circumference | Rolling circumference, from a tyre size or millimetres |
@@ -211,6 +211,31 @@ Two things to know. Apply stage-3 map edits **before** this patch: `0x1CECA4` be
 four of its spans are not inside any XDF table, so the gate needs `--allow-patch`, which explains
 those bytes only where they match the declared patch data exactly — a half-written or
 creatively-written patch span still fails.
+
+## What can and cannot be set per drive mode
+
+Recovered from this calibration's program ROM, not guessed:
+
+**Shift points can.** The strategy state machine picks a state, and
+`strat_shift_char_index` @0x1C9218 maps it to one of 23 shift characteristics. Which states are
+reachable depends on `drive_program` (0 = D, 1 = S, 2 = M) and a 0–5 driving-style level, so each
+mode walks its own ladder as you drive harder — D goes char 0 → 4 → 5 → 6 → 14, S goes 2 → 2 → 15 →
+8 → 8. The decoded lines agree: at every level the S characteristic upshifts later than the D one.
+`--mode normal` and `--mode sport` use those groups out of the box.
+
+**Firmness cannot.** The firmware is two generated models that do not share mode state. The
+strategy model owns `drive_program` and decides *which gear and when*; the shift-pressure execution
+module decides *how hard*, and no drive-mode value reaches it — every pressure object it touches is
+selected by gear, clutch element, class, torque or engine state. So a "harder in Sport" slider is
+not possible here, and the pressure slider necessarily firms up D, S, M, reverse and creep together.
+
+**Manual is a special case.** With `drive_program == 2` the state machine sits on states 2, 5 and 8,
+where `strat_state_gear_sel_method` is 1 rather than the 0 that selects the shift maps — the gear
+comes from your request. **Editing shift points changes nothing in M.** What stops M upshifting for
+you at the guard speed is the True manual patch.
+
+One overlap to know: characteristic **18** is reached by *both* D and S at the highest driving-style
+level, so it is in neither group. Edit it with `--chars 18` only if you mean to change both.
 
 ## Before you flash
 
