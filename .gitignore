@@ -1,0 +1,4 @@
+# Calibration reads and firmware are the user's own; this repo ships definitions only.
+*.bin
+*.gar
+__pycache__/
