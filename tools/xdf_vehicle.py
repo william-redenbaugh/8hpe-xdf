@@ -183,8 +183,13 @@ def write_circumference(buf, const, mm):
     return write_elem(buf, const.embedded.address, const.embedded, mm)
 
 
-def rolling_diameter(mm):
-    """The rolling diameter the formula implies for a circumference."""
+def geometric_diameter(mm):
+    """The unloaded (geometric) tyre diameter this circumference implies.
+
+    The programmed value is a ROLLING circumference, i.e. already multiplied
+    by the 0.97 dynamic factor, so undoing that factor recovers the geometric
+    diameter you can check against a tyre size - not the rolling diameter.
+    """
     return mm / 0.97 / math.pi
 
 
@@ -268,19 +273,62 @@ def nearest_entry(ratio, ratios):
     return entry, (ratio - entry) / entry * 100
 
 
+def neighbours(entry, ratios):
+    """The list entries either side of this one, or None at the ends."""
+    uniq = sorted(set(ratios))
+    i = uniq.index(entry)
+    return (uniq[i - 1] if i > 0 else None,
+            uniq[i + 1] if i + 1 < len(uniq) else None)
+
+
+RATIO_RANGE = (1.0, 8.0)
+
+
+def warn_band(mm):
+    """Flag a circumference outside the band real road tyres occupy."""
+    if not TYPICAL_MM[0] <= mm <= TYPICAL_MM[1]:
+        print(f'  WARNING: {round(mm)} mm is outside the usual '
+              f'{TYPICAL_MM[0]:.0f}-{TYPICAL_MM[1]:.0f} mm band - check the '
+              'tyre size or the ratios you gave')
+
+
+def validate_ratio(name, value):
+    """argparse-level sanity, so bad input never reaches the arithmetic."""
+    if value is None:
+        return
+    if not math.isfinite(value) or not RATIO_RANGE[0] <= value <= RATIO_RANGE[1]:
+        sys.exit(f'{name} must be a final-drive ratio between '
+                 f'{RATIO_RANGE[0]:g} and {RATIO_RANGE[1]:g}, not {value:g}')
+
+
 def diff_report(ratio, ratios, circ, learned=None):
     """-> (lines, suggested_circumference_or_None)."""
     entry, dev = nearest_entry(ratio, ratios)
     lines = [f'real final drive {ratio:.3f}: nearest list entry {entry:.2f}, '
              f'{dev:+.2f}% away']
-    if WINDOW_LO <= dev <= WINDOW_HI:
-        lines.append(f'  inside the documented {WINDOW_LO:+g}%/{WINDOW_HI:+g}% '
-                     'acceptance window')
+    # What decides which entry the TCU snaps to is the distance to this entry
+    # against the distance to its neighbours - not the asymmetric -1/+2.5%
+    # figure, which the XDF states as a tolerance on the circumference you
+    # program, a different quantity.
+    lo, hi = neighbours(entry, ratios)
+    margin = []
+    if lo is not None:
+        margin.append(f'next lower {lo:.2f} is {(ratio - lo) / lo * 100:+.2f}% away')
+    if hi is not None:
+        margin.append(f'next higher {hi:.2f} is {(ratio - hi) / hi * 100:+.2f}% away')
+    if margin:
+        lines.append('  ' + '; '.join(margin))
+    if abs(dev) <= 1.0:
+        lines.append('  that is a close match: the snap costs you little')
+    elif abs(dev) <= 2.5:
+        lines.append(f'  the TCU will run {-dev:+.2f}% out on every speed it '
+                     'derives from the axle, which moves every shift point '
+                     'with it')
     else:
-        lines.append(f'  OUTSIDE the documented {WINDOW_LO:+g}%/'
-                     f'{WINDOW_HI:+g}% window: the TCU has no entry close '
-                     'enough to your axle, so whatever it learns will be off '
-                     'by this much and every shift point moves with it')
+        lines.append(f'  no entry is close to your axle: the nearest is '
+                     f'{dev:+.2f}% out, so every speed the TCU derives will be '
+                     'wrong by about that much. Trimming the circumference '
+                     '(below) is how you compensate')
     if learned is None:
         return lines, None
     if abs(learned - ratio) / ratio <= 0.005:
@@ -338,7 +386,7 @@ def cmd_wheel(args, xdf, buf):
     if note:
         print(f'  NOTE: {note}')
     else:
-        print(f'  implies a {rolling_diameter(old):.0f} mm rolling diameter')
+        print(f'  implies a {geometric_diameter(old):.0f} mm unloaded (geometric) tyre diameter')
 
     if args.tire:
         try:
@@ -355,10 +403,7 @@ def cmd_wheel(args, xdf, buf):
 
     new = round(mm)
     print(f'\nwheel circumference: {old} -> {new} mm  ({source} = {mm:.1f} mm)')
-    if not TYPICAL_MM[0] <= mm <= TYPICAL_MM[1]:
-        print(f'  WARNING: {new} mm is outside the usual '
-              f'{TYPICAL_MM[0]:.0f}-{TYPICAL_MM[1]:.0f} mm band - check the '
-              'tyre size')
+    warn_band(mm)
     if new == old:
         print('  (already programmed - nothing would change)')
     if args.preview:
@@ -372,6 +417,8 @@ def cmd_wheel(args, xdf, buf):
 
 
 def cmd_diff(args, xdf, buf):
+    validate_ratio('--ratio', args.ratio)
+    validate_ratio('--learned', args.learned)
     const = wheel_constant(xdf)
     circ, note = read_circumference(buf, const)
     print(f'programmed circumference: {circ} mm @0x{const.embedded.address:X}')
@@ -396,6 +443,12 @@ def cmd_diff(args, xdf, buf):
     if args.preview:
         print('\npreview only, no file written')
         return
+    if note:
+        sys.exit(f'refusing --fix: the programmed circumference is already '
+                 f'suspect ({note}). The trim is a pure multiple of it, so it '
+                 'would carry that problem through. Set a known-good value '
+                 'with "wheel --mm" or "wheel --tire" first.')
+    warn_band(suggested)
     out = bytearray(buf)
     stored = write_circumference(out, const, suggested)
     print(f'\ncircumference {circ} -> {stored} mm')

@@ -2,10 +2,24 @@
 """True manual: stop the TCU upshifting for you at redline in manual mode.
 
 In M, the stock box still upshifts itself when the engine reaches its guard
-speed. This toggle applies the XDF's own "[PATCH] True manual" - seven fixed
-byte writes - so that guard never fires and the gear you selected is the gear
-you keep. The DME rev limiter still protects the engine; nothing here touches
-engine control.
+speed. This toggle applies the XDF's own "[PATCH] True manual": seven fixed
+byte writes, intended to stop that guard firing so the gear you select is the
+gear you keep.
+
+How much of that is established, honestly. What IS verified here: the seven
+writes are exactly what the XDF's patch declares, and six of the seven stock
+values were confirmed byte-for-byte against a genuine E70 read (the seventh,
+strat_state_attr_3, has no documented stock value and reads all zero). What is
+NOT: the effect on the car. It is inferred from static reverse engineering,
+several of the addresses are rated LOW confidence by the XDF itself, one entry
+(df31_gate_off) is described there as hinging on a runtime value and needing a
+supervised test, and the deterministic fix that entry refers to is a program
+patch outside the calibration that this tool does not apply. Nobody has run
+this on a vehicle. Treat it as a well-aimed experiment, not a finished feature,
+and keep the stock read so --off can put it back.
+
+The DME rev limiter is a separate controller and nothing here touches engine
+control.
 
 The bytes are not invented by this tool. They are read out of the XDF at run
 time (XDFPATCH "[PATCH] True manual"), so the patch, the tool and TunerPro
@@ -43,9 +57,11 @@ Read this before flashing it:
   * The XDF description also records an R4 companion edit (the cap at
     0x1CC03C, 7200 -> 10000) that is NOT one of the seven entries. This tool
     writes only what the patch contains.
-  * Three of the seven spans (0x1CECA6, 0x1D3A80/81, 0x1D28EC, 0x1D34B1) are
-    not inside any XDF table or constant, so the default xdf_verify run will
-    call them unexplained. Gate this with --allow-patch, which explains a
+  * Five of the seven entries - four changed ranges, 7 bytes in all
+    (0x1CECA6, 0x1D28EC, 0x1D34B1, 0x1D3A80/81) - are not inside any XDF table
+    or constant, so the default xdf_verify run will call them unexplained.
+    Only overspeed_limit_1 (constant escalation_test1_threshold) and
+    strat_state_attr_3_01 (table strat_state_attr_3) are covered. Gate this with --allow-patch, which explains a
     changed byte only when it is inside an XDFPATCH entry AND the bytes
     written are byte-for-byte that entry's patch data.
 
@@ -99,8 +115,8 @@ def documented_stock_check(rows):
         if want is None:
             out.append(f'{e.name}: not in the documented stock list - this '
                        'tool has nothing to check it against')
-        elif state == 'off' and cur != want:
-            out.append(f'{e.name} @0x{e.address:X}: not applied, but stock is '
+        elif state != 'on' and cur != want:
+            out.append(f'{e.name} @0x{e.address:X}: neither patch nor stock - is '
                        f'{cur[:8].hex()}{"..." if len(cur) > 8 else ""} where '
                        f'the XDF describes {want[:8].hex()}'
                        f'{"..." if len(want) > 8 else ""}')
@@ -179,9 +195,11 @@ def print_status(rows, overall):
     complaints = documented_stock_check(rows)
     for c in complaints:
         print('  WARNING: ' + c)
-    if not complaints:
-        print('  every unapplied entry holds exactly the stock bytes the XDF '
-              'description claims for it')
+    checked = [e for e, state, _cur in rows
+               if state != 'on' and DOCUMENTED_STOCK.get(e.name) is not None]
+    if not complaints and checked:
+        print(f'  all {len(checked)} unapplied entries hold exactly the stock '
+              'bytes the XDF description claims for them')
 
 
 def open_checked(path, any_calibration):
@@ -264,8 +282,14 @@ def main():
     with open(args.out, 'wb') as f:
         f.write(work)
     print(f'\nwrote {args.out} (checksum NOT corrected - sign before flashing)')
-    print(f'gate it: xdf_verify.py {args.xdf} {args.bin} {args.out} '
-          '--allow-patch')
+    if getattr(args, 'off', False):
+        # A revert is only meaningful against the stock read it restored from:
+        # comparing it with the patched input would report the undo as damage.
+        print(f'gate it: xdf_verify.py {args.xdf} {args.stock} {args.out}'
+              '   (a clean revert shows zero changed bytes)')
+    else:
+        print(f'gate it: xdf_verify.py {args.xdf} {args.bin} {args.out} '
+              '--allow-patch')
 
 
 if __name__ == '__main__':

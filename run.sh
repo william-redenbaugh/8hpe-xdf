@@ -1,5 +1,6 @@
 #!/bin/sh
-# Launch the shift-pressure GUI with this repo's XDF loaded.
+# Launch the toggle GUI (shift pressure, wheel, differential, true manual)
+# with this repo's XDF loaded.
 #
 #   ./run.sh                 - start the GUI, then "Open bin..."
 #
