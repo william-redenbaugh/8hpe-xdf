@@ -103,6 +103,11 @@ TYPICAL_MM = (1700.0, 2600.0)
 
 TIRE_RX = re.compile(r'^(\d{3})\s*/\s*(\d{2})\s*[RrZz]?\s*(\d{2}(?:\.\d)?)$')
 
+# The post-flash relearn procedure, as the XDF's Radumfang description gives
+# it. Shown in both subcommands' help: a circumference that is never relearnt
+# is a circumference that does nothing.
+RELEARN = __doc__[__doc__.index('After flashing'):__doc__.index('Checksums')]
+
 
 # ------------------------------------------------------------------ wheel
 
@@ -336,8 +341,11 @@ def cmd_wheel(args, xdf, buf):
         print(f'  implies a {rolling_diameter(old):.0f} mm rolling diameter')
 
     if args.tire:
-        width, profile, rim = tire_size(args.tire)
-        mm = tire_circumference(args.tire)
+        try:
+            width, profile, rim = tire_size(args.tire)
+            mm = tire_circumference(args.tire)
+        except ValueError as e:
+            sys.exit(str(e))
         source = (f'tyre {args.tire}: pi x ({rim:g} x 25.4 + 2 x {width:g} x '
                   f'{profile:g}/100) x 0.97')
     elif args.mm is not None:
@@ -401,6 +409,11 @@ def main():
         epilog=__doc__[__doc__.index('After flashing'):])
     sub = ap.add_subparsers(dest='cmd', required=True)
 
+    def add(name, help_text):
+        return sub.add_parser(
+            name, help=help_text, description=help_text, epilog=RELEARN,
+            formatter_class=argparse.RawDescriptionHelpFormatter)
+
     def common(p):
         p.add_argument('bin', help='calibration read (the 2 MB image)')
         p.add_argument('-o', '--out', help='output bin (omit with --preview)')
@@ -412,7 +425,7 @@ def main():
                             'from the one this XDF describes (the addresses '
                             'then mean something else - almost always wrong)')
 
-    p = sub.add_parser('wheel', help='read or set the wheel circumference')
+    p = add('wheel', 'read or set the dynamic wheel circumference')
     common(p)
     p.add_argument('--tire', '--tyre', dest='tire',
                    help='tyre size, e.g. 245/40R18 (overrides --mm)')
@@ -420,7 +433,7 @@ def main():
                    help='dynamic rolling circumference in mm, straight from '
                         "the tyre maker's Abrollumfang if you have it")
 
-    p = sub.add_parser('diff', help='check a final drive against the TCU list')
+    p = add('diff', 'check a final drive against the list the TCU snaps to')
     common(p)
     p.add_argument('--ratio', type=float,
                    help='the real final-drive ratio of the axle in the car')

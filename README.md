@@ -33,7 +33,9 @@ addresses in the XDF are file offsets.
 | `tools/xdf_verify.py` | Prove a modified bin changes nothing it shouldn't. Run before flashing. |
 | `tools/xdf_gearbias.py` | Pick a higher (or lower) gear when you plant the throttle. |
 | `tools/xdf_blip.py` | Blip the throttle harder on downshifts. |
-| `tools/xdf_gui.py` | The same thing with a window; start it with `./run.sh`. |
+| `tools/xdf_vehicle.py` | Wheel circumference and final drive — what a swapped or re-geared car must get right. |
+| `tools/xdf_truemanual.py` | Apply or undo the XDF's `[PATCH] True manual`: no TCU-forced upshift at redline in M. |
+| `tools/xdf_gui.py` | Shift pressure, wheel, differential and true manual in a window; start it with `./run.sh`. |
 | `tools/xdflib.py` | The XDF parser the tools share. |
 
 Dependency-free Python 3. On macOS use `/usr/bin/python3` — some Homebrew builds ship a broken
@@ -46,10 +48,13 @@ entirely.
 ./run.sh
 ```
 
-Then **Open bin...**, pick a level or an exact percentage, **Preview** to see what would change,
-**Apply**, **Check bin**, and **Save As...**. Nothing is written to disk until you save, and
-**Undo** steps back through every change. The calibration identity is checked the moment a bin is
-opened and shown top-right; if it does not match, editing stays blocked.
+Then **Open bin...** and pick a panel: **Shift pressure** (a level or an exact percentage),
+**Wheel circumference** (a tyre size or millimetres), **Differential** (your real axle ratio against
+the list the TCU snaps to, and the trim that corrects a wrong learned value) or **True manual**
+(the XDF's patch, on or off). **Preview** shows what would change, **Apply** changes the copy in
+memory, **Check bin** runs the gate and **Save As...** writes it. Nothing reaches disk until you
+save, and **Undo** steps back through every change. The calibration identity is checked the moment
+a bin is opened and shown top-right; if it does not match, editing stays blocked.
 
 `run.sh` picks a Python whose Tk actually works - Apple's `/usr/bin/python3` ships Tk 8.5, which
 recent macOS refuses to start, so a Homebrew Python with `brew install python-tk` is preferred when
@@ -81,6 +86,18 @@ by: unknown."* Two things are therefore unproven:
   over an axis spanning 2000–7000 (plausible rpm) — but no reader function has been identified.
 - **That an XHP tune changes them.** They sit in the XDF's `stage 3` category, documented as the
   list of maps such a tune touches, but this has not been checked byte for byte (see below).
+
+**Converter lockup rides the same slider.** Holding the torque-converter clutch tighter means less
+torque is absorbed and released by a slipping converter, so the shift lands more directly. Two maps
+move at half the slider's strength: `tcc_press_hold_map` and `tcc_press_fill_map`. Both are HIGH
+confidence with units the firmware gives us — 0.01 bar per count — so the report is in bar. Turn it
+off with `--no-tcc`, or set it independently with `--tcc-pct`.
+
+Be clear about what this is **not**: nothing in this XDF isolates lockup *during a shift*. These are
+the general TCC pressure setpoints, so the converter is tightened everywhere, not only mid-shift.
+That is what makes shifts feel direct, but it also puts more drivetrain shock through at low rpm and
+makes converter shudder likelier — especially behind an engine the converter was not matched to. If
+the car shudders or lugs, `--no-tcc` is the first thing to back off.
 
 **What is verified.** A cell is only ever raised *towards the largest value that same map already
 contains*, so nothing is pushed past a value ZF itself writes somewhere in that map; and the edit
@@ -136,16 +153,71 @@ multipliers and gates rather than torque; and two maps the XDF declares 16-bit w
 content, where the definition is wrong and writing through it would hit the wrong bytes. The tool
 lists what it skipped.
 
+## Wheel circumference and final drive
+
+The TCU has no axle-ratio setting. It derives the final drive from wheel speed and output-shaft
+speed, and the only calibration input to that is the dynamic rolling circumference — so a swapped
+box, a re-geared diff or a different tyre size all come back to one number.
+
+```sh
+python3 xdf_vehicle.py wheel /path/to/stock.bin                    # read it
+python3 xdf_vehicle.py wheel /path/to/stock.bin --tire 245/40R18 -o tuned.bin
+python3 xdf_vehicle.py wheel /path/to/stock.bin --mm 2185 -o tuned.bin
+python3 xdf_vehicle.py diff  /path/to/stock.bin --ratio 3.73
+python3 xdf_vehicle.py diff  /path/to/stock.bin --ratio 3.73 --learned 3.91 --fix -o tuned.bin
+```
+
+The constant is found through the XDF by title, not by address, and reads **2249 mm** on the
+reference E70 image — which is the right answer: the stock 255/55R18 and 255/50R19 fitments both
+come to 2248 mm through the XDF's own formula, `pi × (rim × 25.4 + 2 × width × profile/100) × 0.97`.
+
+`diff` does not trust a remembered address for the TCU's fixed ratio list either. It **searches your
+image** for a count-prefixed block of ascending ratios: in the reference calibration exactly one
+block matches, at `0x19147C`, and its 17 distinct values are exactly the list the XDF documents. In
+the sibling `b5yc1313` calibration the same search finds it at `0x1916B4` instead — which is why the
+address is reported rather than assumed. Give it your real ratio and it reports the entry the TCU
+will snap to and how far off that is; give it the ratio the TCU actually learned and it computes the
+circumference trim that makes the next relearn land on the right entry.
+
+After flashing: reset the learned value (Tool32 `steuern_lernfkt_ruecksetzen`, argument 0), drive
+above about 24 km/h, then read `status_lernfkt`. Do **not** use this to correct the speedometer —
+that is the DSC's coding.
+
+## True manual
+
+```sh
+python3 xdf_truemanual.py /path/to/stock.bin --status
+python3 xdf_truemanual.py /path/to/stock.bin -o tuned.bin
+python3 xdf_truemanual.py tuned.bin --off --stock stock.bin -o back.bin
+```
+
+Applies the XDF's own `[PATCH] True manual` — seven writes, 109 bytes, read out of the XDF at run
+time so the tool and TunerPro write the same thing. In M the gear you choose is the gear you keep;
+the DME rev limiter still protects the engine. `--status` reports each entry and checks that the
+untouched ones really hold the stock values the patch description claims (on the reference image
+all seven do).
+
+Two things to know. Apply stage-3 map edits **before** this patch: `0x1CECA4` belongs to both. And
+four of its spans are not inside any XDF table, so the gate needs `--allow-patch`, which explains
+those bytes only where they match the declared patch data exactly — a half-written or
+creatively-written patch span still fails.
+
 ## Before you flash
 
 ```sh
 python3 xdf_verify.py ../8hpe70_cali_v3.xdf stock.bin tuned.bin
+python3 xdf_verify.py ../8hpe70_cali_v3.xdf stock.bin tuned.bin --allow-patch   # True manual
 ```
 
 It fails unless the image is the calibration this XDF describes **and** every changed byte lands
 inside a table the XDF describes. It additionally refuses a bin that touches the program region, the
 calibration header, the `ZFADINFO` identification block or the signature tail, or that leaves a
 pedal axis decreasing. A clean run prints `PASS`.
+
+`--allow-patch` widens "inside a table" to include an `XDFPATCH` entry — but only where the tuned
+bytes are byte-for-byte the patch data the XDF declares, so it admits a patch that was applied
+faithfully and nothing else. Without it, a bin carrying the True manual patch fails on the four
+spans no table covers, which is the gate doing its job.
 
 Two honest limits on what a `PASS` means. It says the edit was structurally contained; it cannot
 say the calibration is good for your car. And if your read is calibration-only (everything below

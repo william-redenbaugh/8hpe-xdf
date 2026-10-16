@@ -70,6 +70,42 @@ XDF_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 PATCH_TITLE = 'true manual'
 
+# What the XDF's patch description says each entry overwrites, so the tool can
+# check the claim against your image instead of taking it on trust. Addresses
+# are not listed here: they come from the patch. Keyed by entry name, value is
+# the stock bytes the description implies.
+DOCUMENTED_STOCK = {
+    'overspeed_limit_1': bytes.fromhex('1bbc'),      # 7100 rpm
+    'overspeed_limit_2': bytes.fromhex('1aa9'),      # 6825 rpm
+    'overspeed_margin_a': bytes.fromhex('69'),       # 105
+    'overspeed_margin_b': bytes.fromhex('69'),       # 105
+    'revmatch_latch_arm': bytes.fromhex('1964'),     # 6500 rpm
+    'df31_gate_off': bytes.fromhex('02'),            # gate on
+    'strat_state_attr_3_01': bytes(100),             # the K0 lever, all zero
+}
+
+
+def documented_stock_check(rows):
+    """Do the untouched entries hold the values the XDF description claims?
+
+    Checked rather than assumed, because every one of these addresses exists
+    in any image: if an entry is 'off' but does not hold the documented stock
+    bytes either, the address means something else here and writing 0xFF over
+    it is a shot in the dark. -> list of complaint strings.
+    """
+    out = []
+    for e, state, cur in rows:
+        want = DOCUMENTED_STOCK.get(e.name)
+        if want is None:
+            out.append(f'{e.name}: not in the documented stock list - this '
+                       'tool has nothing to check it against')
+        elif state == 'off' and cur != want:
+            out.append(f'{e.name} @0x{e.address:X}: not applied, but stock is '
+                       f'{cur[:8].hex()}{"..." if len(cur) > 8 else ""} where '
+                       f'the XDF describes {want[:8].hex()}'
+                       f'{"..." if len(want) > 8 else ""}')
+    return out
+
 
 def true_manual_patch(xdf):
     """The [PATCH] True manual object, found through the XDF by title."""
@@ -140,6 +176,12 @@ def print_status(rows, overall):
               + ('...' if len(cur) > 8 else '')
               + f'  patch={e.patchdata[:8].hex()}'
               + ('...' if len(e.patchdata) > 8 else ''))
+    complaints = documented_stock_check(rows)
+    for c in complaints:
+        print('  WARNING: ' + c)
+    if not complaints:
+        print('  every unapplied entry holds exactly the stock bytes the XDF '
+              'description claims for it')
 
 
 def open_checked(path, any_calibration):
