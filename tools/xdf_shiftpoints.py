@@ -116,6 +116,57 @@ def cap_for(pair, kind, max_engine_rpm, ratios):
     return None if not r else max_engine_rpm / r
 
 
+def plan(buf, tables, chars, up_pct=0.0, dn_pct=0.0, up_rpm=0.0, dn_rpm=0.0,
+         pedal_from=0.0, min_gap=150, max_engine_rpm=7000, ratios=None):
+    """Apply the shift-point move to buf in place.
+
+    Upshifts are done before downshifts so the anti-hunting guard measures
+    against the upshift values the box will actually use, not the old ones.
+    -> (changed_cells, lines_touched, capped_at_rev_limit, held_below_upshift)
+    """
+    ratios = ratios or RATIOS
+    changed = clamped_gap = clamped_rev = 0
+    touched = set()
+    for kind, pct, flat in (('up', up_pct, up_rpm), ('down', dn_pct, dn_rpm)):
+        if not pct and not flat:
+            continue
+        for (ch, pair, k), t in sorted(tables.items()):
+            if k != kind or ch not in chars:
+                continue
+            rows, cols = t.shape()
+            emb = t.z.embedded
+            d = decode_table(buf, t)
+            pedal = d['x']
+            up_t = tables.get((ch, f'{pair.split(">")[1]}>{pair.split(">")[0]}', 'up'))
+            up_z = decode_table(buf, up_t)['z'] if (kind == 'down' and up_t) else None
+            cap = cap_for(pair, kind, max_engine_rpm, ratios) if kind == 'up' else None
+            for r in range(rows):
+                for c in range(cols):
+                    v = d['z'][r][c]
+                    if v <= 0 or v >= SENTINEL:
+                        continue
+                    idx = c if cols >= rows else r
+                    pv = pedal[idx] if pedal and idx < len(pedal) else 0
+                    if isinstance(pv, (int, float)) and pv < pedal_from:
+                        continue
+                    new = v * (1 + pct / 100.0) + flat
+                    if cap is not None and new > cap:
+                        new = cap
+                        clamped_rev += 1
+                    if up_z is not None:
+                        u = up_z[r][c]
+                        if 0 < u < SENTINEL and new > u - min_gap:
+                            new = u - min_gap
+                            clamped_gap += 1
+                    new = max(0, min(SENTINEL - 1, round(new)))
+                    if new != v:
+                        write_elem(buf, element_offset(emb, rows, cols, r, c),
+                                   emb, new)
+                        changed += 1
+                        touched.add((ch, pair, kind))
+    return changed, len(touched), clamped_rev, clamped_gap
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
@@ -215,48 +266,10 @@ def main():
                  f'(this XDF has {all_chars[0]}..{all_chars[-1]})')
 
     buf = bytearray(stock)
-    changed = clamped_gap = clamped_rev = 0
-    touched_pairs = set()
-
-    # Upshifts first, then downshifts against the NEW upshift values, so the
-    # hysteresis guard measures against what the box will actually use.
-    for kind, pct, flat in (('up', args.up_pct, args.up_rpm),
-                            ('down', args.dn_pct, args.dn_rpm)):
-        if not pct and not flat:
-            continue
-        for (ch, pair, k), t in sorted(tables.items()):
-            if k != kind or ch not in chars:
-                continue
-            rows, cols = t.shape()
-            emb = t.z.embedded
-            d = decode_table(buf, t)
-            pedal = d['x']
-            up_t = tables.get((ch, f'{pair.split(">")[1]}>{pair.split(">")[0]}', 'up'))
-            up_z = decode_table(buf, up_t)['z'] if (kind == 'down' and up_t) else None
-            cap = cap_for(pair, kind, args.max_engine_rpm, ratios) if kind == 'up' else None
-            for r in range(rows):
-                for c in range(cols):
-                    v = d['z'][r][c]
-                    if v <= 0 or v >= SENTINEL:
-                        continue
-                    idx = c if cols >= rows else r
-                    pv = pedal[idx] if pedal and idx < len(pedal) else 0
-                    if isinstance(pv, (int, float)) and pv < args.pedal_from:
-                        continue
-                    new = v * (1 + pct / 100.0) + flat
-                    if cap is not None and new > cap:
-                        new, _ = cap, clamped_rev
-                        clamped_rev += 1
-                    if up_z is not None:
-                        u = up_z[r][c]
-                        if 0 < u < SENTINEL and new > u - args.min_gap:
-                            new = u - args.min_gap
-                            clamped_gap += 1
-                    new = max(0, min(SENTINEL - 1, round(new)))
-                    if new != v:
-                        write_elem(buf, element_offset(emb, rows, cols, r, c), emb, new)
-                        changed += 1
-                        touched_pairs.add((ch, pair, kind))
+    changed, n_lines, clamped_rev, clamped_gap = plan(
+        buf, tables, chars, args.up_pct, args.dn_pct, args.up_rpm, args.dn_rpm,
+        args.pedal_from, args.min_gap, args.max_engine_rpm, ratios)
+    touched_pairs = range(n_lines)
 
     print(f'characteristics {sorted(chars)}: upshift {args.up_pct:+g}%'
           + (f' {args.up_rpm:+g} rpm' if args.up_rpm else '')

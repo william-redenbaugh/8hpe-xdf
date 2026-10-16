@@ -32,11 +32,15 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import xdf_blip
+import xdf_gearbias
+import xdf_shiftpoints
 import xdf_stage3
 import xdf_truemanual
 import xdf_vehicle
 import xdf_verify
-from xdflib import XDF, load_bin, decode_table, check_calibration
+from xdflib import (XDF, load_bin, decode_table, check_calibration,
+                    element_offset, write_elem)
 
 DEFAULT_XDF = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            '..', '8hpe70_cali_v3.xdf')
@@ -78,6 +82,9 @@ class App(tk.Tk):
         nb = ttk.Notebook(self)
         nb.pack(fill='both', expand=True, padx=10)
         self._build_pressure(nb)
+        self._build_shiftpoints(nb)
+        self._build_kickdown(nb)
+        self._build_blip(nb)
         self._build_wheel(nb)
         self._build_diff(nb)
         self._build_truemanual(nb)
@@ -116,6 +123,203 @@ class App(tk.Tk):
             self.tree.heading(c, text=c)
             self.tree.column(c, width=w, anchor='w')
         self.tree.pack(fill='both', expand=True, pady=(8, 0))
+
+    # ------------------------------------------------------- shift points
+    @staticmethod
+    def _pct_row(parent, label, lo, hi, init, length=200):
+        row = ttk.Frame(parent)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text=label, width=24).pack(side='left')
+        var = tk.DoubleVar(value=init)
+        shown = ttk.Label(row, width=7)
+        ttk.Scale(row, from_=lo, to=hi, variable=var, length=length,
+                  command=lambda _e: shown.config(text=f'{var.get():+.0f}')
+                  ).pack(side='left')
+        shown.config(text=f'{var.get():+.0f}')
+        shown.pack(side='left', padx=(6, 0))
+        return var
+
+    def _run_edit(self, label, fn):
+        """Apply fn(buf) under one undo entry, or report why it could not."""
+        if not self._ready():
+            return
+        buf = bytearray(self.work)
+        try:
+            summary = fn(buf)
+        except Exception as e:                  # never let a panel kill the app
+            return messagebox.showerror('Failed', f'{type(e).__name__}: {e}')
+        if not summary:
+            return
+        self._snapshot(label)
+        self.work = buf
+        self._log(f'APPLIED {label}: ' + summary)
+        self._refresh()
+
+    def _run_preview(self, label, fn):
+        if not self._ready(need_edit=False):
+            return
+        buf = bytearray(self.work)          # throwaway: preview never commits
+        try:
+            summary = fn(buf)
+        except Exception as e:
+            return messagebox.showerror('Failed', f'{type(e).__name__}: {e}')
+        self._log(f'preview {label}: ' + (summary or 'nothing to do'))
+
+    def _build_shiftpoints(self, nb):
+        tab = ttk.Frame(nb, padding=(0, 8))
+        nb.add(tab, text='Shift points')
+        ttk.Label(tab, wraplength=900, justify='left', text=(
+            'Moves WHEN it shifts, per drive mode - not how hard. The schedule exists 23 '
+            'times over ("characteristics") and the drive mode selects which is live, so '
+            'editing one mode leaves the rest alone. Positive upshift % holds gears '
+            'further up the rev range. Which characteristics your modes use is not in the '
+            'calibration: find them with "xdf_shiftpoints.py BIN --identify N" and record '
+            'them with --set-mode, or type them here.')).pack(anchor='w', padx=10)
+        ctl = ttk.LabelFrame(tab, text='Shift points', padding=(10, 8))
+        ctl.pack(fill='x', padx=10, pady=(8, 0))
+        row = ttk.Frame(ctl)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text='mode', width=24).pack(side='left')
+        self.sp_mode = ttk.Combobox(row, width=16, state='readonly')
+        self.sp_mode.pack(side='left')
+        ttk.Label(row, text='  or characteristics:').pack(side='left')
+        self.sp_chars = ttk.Entry(row, width=14)
+        self.sp_chars.pack(side='left', padx=(4, 0))
+        ttk.Button(row, text='reload modes.json',
+                   command=self._sp_reload).pack(side='left', padx=(8, 0))
+        self.sp_up = self._pct_row(ctl, 'upshift % (+ = later)', -50, 50, 12)
+        self.sp_dn = self._pct_row(ctl, 'downshift % (+ = sooner)', -50, 50, 0)
+        self.sp_rev = self._pct_row(ctl, 'engine rpm cap', 5000, 7500, 7000)
+        btn = ttk.Frame(ctl)
+        btn.pack(fill='x', pady=(8, 0))
+        ttk.Button(btn, text='Preview', command=lambda: self._run_preview(
+            'shift points', self._sp_apply)).pack(side='left')
+        ttk.Button(btn, text='Apply', command=lambda: self._run_edit(
+            'shift points', self._sp_apply)).pack(side='left', padx=(6, 0))
+        self._sp_reload()
+
+    def _sp_reload(self):
+        groups, _path = xdf_shiftpoints.load_modes(self.xdf_path)
+        self.sp_mode['values'] = sorted(groups)
+        if groups and not self.sp_mode.get():
+            self.sp_mode.set(sorted(groups)[0])
+
+    def _sp_chars(self):
+        txt = self.sp_chars.get().strip()
+        if txt:
+            return {int(c) for c in txt.replace(' ', '').split(',') if c}
+        groups, path = xdf_shiftpoints.load_modes(self.xdf_path)
+        got = groups.get(self.sp_mode.get(), set())
+        if not got:
+            self._log(f'no characteristics for "{self.sp_mode.get()}" - use '
+                      f'--identify from the command line to find which mode uses '
+                      f'which, record it in {path}, or type them in the box')
+        return got
+
+    def _sp_apply(self, buf):
+        chars = self._sp_chars()
+        if not chars:
+            return None
+        tables = xdf_shiftpoints.collect(self.xdf)
+        n, lines, rev, gap = xdf_shiftpoints.plan(
+            buf, tables, chars, up_pct=self.sp_up.get(), dn_pct=self.sp_dn.get(),
+            max_engine_rpm=self.sp_rev.get())
+        extra = []
+        if rev:
+            extra.append(f'{rev} capped at {self.sp_rev.get():.0f} engine rpm')
+        if gap:
+            extra.append(f'{gap} held clear of the upshift line')
+        return (f'chars {sorted(chars)}, up {self.sp_up.get():+.0f}% '
+                f'dn {self.sp_dn.get():+.0f}%: {n} cells on {lines} lines'
+                + (' (' + '; '.join(extra) + ')' if extra else ''))
+
+    # ----------------------------------------------------------- kickdown
+    def _build_kickdown(self, nb):
+        tab = ttk.Frame(nb, padding=(0, 8))
+        nb.add(tab, text='Kickdown gear')
+        ttk.Label(tab, wraplength=900, justify='left', text=(
+            'Which gear a planted throttle drops to. "higher" makes it drop one gear '
+            'less far, by giving each downshift line the value its deeper neighbour '
+            'already held - the numbers come from the calibration itself. Only pedal '
+            'positions at or above the threshold change, so part throttle stays stock. '
+            '"lower" is mostly refused: a downshift line cannot cross its upshift line '
+            'without the box hunting.')).pack(anchor='w', padx=10)
+        ctl = ttk.LabelFrame(tab, text='Kickdown gear bias', padding=(10, 8))
+        ctl.pack(fill='x', padx=10, pady=(8, 0))
+        row = ttk.Frame(ctl)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text='bias', width=24).pack(side='left')
+        self.kd_bias = tk.StringVar(value='higher')
+        for b in ('higher', 'lower'):
+            ttk.Radiobutton(row, text=f'one gear {b}', variable=self.kd_bias,
+                            value=b).pack(side='left', padx=(0, 10))
+        self.kd_pedal = self._pct_row(ctl, 'from pedal (per mille)', 0, 1100, 650)
+        btn = ttk.Frame(ctl)
+        btn.pack(fill='x', pady=(8, 0))
+        ttk.Button(btn, text='Preview', command=lambda: self._run_preview(
+            'kickdown', self._kd_apply)).pack(side='left')
+        ttk.Button(btn, text='Apply', command=lambda: self._run_edit(
+            'kickdown', self._kd_apply)).pack(side='left', padx=(6, 0))
+
+    def _kd_apply(self, buf):
+        dn, up = xdf_gearbias.collect(self.xdf)
+        writes, notes = xdf_gearbias.plan(buf, dn, up, self.kd_bias.get(),
+                                          self.kd_pedal.get(), 150)
+        for emb, rows, cols, r, c, val in writes:
+            write_elem(buf, element_offset(emb, rows, cols, r, c), emb, val)
+        for n in notes:
+            self._log('  ' + n)
+        chars = sorted({c for c, _p in dn})
+        if chars and self.stock is not None:
+            before = xdf_gearbias.kickdown_table(self.stock, dn, chars[0])
+            after = xdf_gearbias.kickdown_table(buf, dn, chars[0])
+            self._log(f'  char {chars[0]:02d} gear at full pedal: ' + ', '.join(
+                f'{s} rpm {xdf_gearbias.gear_at(before, s)}->'
+                f'{xdf_gearbias.gear_at(after, s)}'
+                for s in (1500, 2500, 3500, 5000)))
+        return f'one gear {self.kd_bias.get()}: {len(writes)} cells'
+
+    # --------------------------------------------------------------- blip
+    def _build_blip(self, nb):
+        tab = ttk.Frame(nb, padding=(0, 8))
+        nb.add(tab, text='Downshift blip')
+        ttk.Label(tab, wraplength=900, justify='left', text=(
+            'Scales the rev-match blip on downshifts. Torque = (z - 128) x 6 Nm, so only '
+            'the amount above zero is scaled and maps asking for no blip stay at zero. '
+            'This applies to ALL drive modes: the maps are indexed by clutch (K0/K1/K2), '
+            'and whether the live one is picked by drive mode is not yet established, so '
+            'a per-mode blip would be guesswork.')).pack(anchor='w', padx=10)
+        ctl = ttk.LabelFrame(tab, text='Downshift blip', padding=(10, 8))
+        ctl.pack(fill='x', padx=10, pady=(8, 0))
+        self.bl_pct = self._pct_row(ctl, 'blip % over stock', -50, 100, 15)
+        row = ttk.Frame(ctl)
+        row.pack(fill='x', pady=2)
+        ttk.Label(row, text='gear pairs (blank = all)', width=24).pack(side='left')
+        self.bl_pairs = ttk.Entry(row, width=26)
+        self.bl_pairs.pack(side='left')
+        btn = ttk.Frame(ctl)
+        btn.pack(fill='x', pady=(8, 0))
+        ttk.Button(btn, text='Preview', command=lambda: self._run_preview(
+            'blip', self._bl_apply)).pack(side='left')
+        ttk.Button(btn, text='Apply', command=lambda: self._run_edit(
+            'blip', self._bl_apply)).pack(side='left', padx=(6, 0))
+
+    def _bl_apply(self, buf):
+        txt = self.bl_pairs.get().strip()
+        pairs = set(txt.replace(' ', '').split(',')) if txt else None
+        tables, skipped = xdf_blip.blip_tables(self.xdf, pairs)
+        if not tables:
+            self._log('  no blip maps matched those gear pairs')
+            return None
+        total, peak = 0, 0.0
+        for t in tables:
+            n, _cells, _nmb, nma = xdf_blip.scale_blip(buf, t, self.bl_pct.get())
+            total += n
+            peak = max(peak, nma)
+        for t, why in skipped:
+            self._log(f'  skipped {t.title}: {why}')
+        return (f'{self.bl_pct.get():+.0f}% on {len(tables)} maps: {total} cells, '
+                f'peak blip now {peak:.0f} Nm')
 
     def _build_wheel(self, nb):
         tab = ttk.Frame(nb, padding=(0, 8))
