@@ -10,7 +10,9 @@ flash tool correct them) before flashing.
                  (optionally dragging the matching downshift lines along)
   quickness      shorten the documented shift-execution phase/sync time
                  tables by a percentage (faster, firmer shifts)
-  redline-hold   raise the 1>2/2>3/3>4 upshift lines of all 23
+  sport-redline  rev out 1st and 2nd to --rpm (default 7000) by raising the
+                 1>2/2>3 upshift lines, only from --pedal-from permille up
+  redline-hold   raise the 1>2/2>3/3>4 upshift lines of all
                  characteristics to engine redline / gear ratio
   early-upshift  NA mode: lower all upshift lines pedal-weighted (full at
                  closed throttle, zero from 80% pedal), clamped >= the
@@ -27,6 +29,7 @@ flash tool correct them) before flashing.
 Examples:
   xdf_tune.py shift-offset  my.bin -o out.bin --rpm +300
   xdf_tune.py quickness     my.bin -o out.bin --pct 15
+  xdf_tune.py sport-redline my.bin -o out.bin --rpm 7000
   xdf_tune.py redline-hold  my.bin -o out.bin --redline 7000
   xdf_tune.py early-upshift my.bin -o out.bin --rpm 400
   xdf_tune.py wheel         my.bin -o out.bin --tire 245/40R18
@@ -37,12 +40,22 @@ Examples:
 """
 import argparse
 import math
+import os
 import re
 import sys
 
 from xdflib import XDF, decode_table, decode_constant, element_offset, write_elem
 
-XDF_DEFAULT = '../8hpe_cali_v3.xdf'
+def _default_xdf():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ('8hpe84_cali_v1.xdf', '8hpe70_cali_v3.xdf', '8hpe_cali_v3.xdf'):
+        cand = os.path.join(here, '..', name)
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(here, '..', '8hpe84_cali_v1.xdf')
+
+
+XDF_DEFAULT = _default_xdf()
 SENTINEL = 7900
 UP_CURVE = re.compile(r'^Upshift char (\d+): (\d)>(\d)$')
 DN_CURVE = re.compile(r'^Downshift char (\d+): (\d)>(\d)$')
@@ -152,6 +165,33 @@ def op_redline_hold(buf, xdf, redline, margin_pct, ratios):
         total += edit_cells(buf, t, lambda r, c, v, d:
                             None if (v <= 0 or v >= SENTINEL)
                             else max(v, tgt))
+    return total, targets
+
+
+def op_sport_redline(buf, xdf, rpm, margin_pct, ratios, pedal_from, chars=None):
+    """Hold 1st/2nd (pairs in ratios) to `rpm` from `pedal_from` permille up.
+
+    Raises the matching upshift lines to rpm/ratio only at pedal breakpoints
+    >= pedal_from, so light-throttle shifts stay stock and the box revs out
+    when pushed. chars limits which characteristics are touched (default all;
+    the E84 char-to-drive-mode mapping lives in the missing program ROM, so
+    identify the sport characteristic by logging, or edit all).
+    """
+    targets = {p: round(rpm * (1 - margin_pct / 100.0) / r)
+               for p, r in ratios.items()}
+    total = 0
+    for t, _k, _c, pair in shift_curves(xdf, ('up',), set(targets), chars):
+        tgt = targets[pair]
+
+        def fn(r, c, v, d):
+            if v <= 0 or v >= SENTINEL:
+                return None
+            pedal = d['x'][c] if d['x'] and isinstance(d['x'][c], (int, float)) else 0
+            if pedal < pedal_from:
+                return None
+            return max(v, tgt)
+
+        total += edit_cells(buf, t, fn)
     return total, targets
 
 
@@ -290,6 +330,17 @@ def main():
     common(p)
     p.add_argument('--pct', type=float, required=True, help='0-40, faster by %%')
 
+    p = sub.add_parser('sport-redline')
+    common(p)
+    p.add_argument('--rpm', type=float, default=7000,
+                   help='engine rpm to rev out to in 1st/2nd (default 7000)')
+    p.add_argument('--margin', type=float, default=2, help='%% below --rpm')
+    p.add_argument('--r1', type=float, default=4.714, help='1st gear ratio (8HP45)')
+    p.add_argument('--r2', type=float, default=3.143, help='2nd gear ratio (8HP45)')
+    p.add_argument('--pedal-from', type=float, default=400,
+                   help='apply from this pedal permille up (default 400; 0 = everywhere)')
+    p.add_argument('--chars', help='characteristic numbers, e.g. 8,9 (default: all)')
+
     p = sub.add_parser('redline-hold')
     common(p)
     p.add_argument('--redline', type=float, default=7000)
@@ -347,6 +398,15 @@ def main():
     elif args.cmd == 'quickness':
         n, tables = op_quickness(buf, xdf, args.pct)
         print(f'quickness -{args.pct:.0f}%: {n} cells across {tables} time tables')
+    elif args.cmd == 'sport-redline':
+        chars = ({int(x) for x in args.chars.split(',')} if args.chars else None)
+        n, targets = op_sport_redline(buf, xdf, args.rpm, args.margin,
+                                      {'1>2': args.r1, '2>3': args.r2},
+                                      args.pedal_from, chars)
+        print(f'sport-redline {args.rpm:.0f} rpm from pedal {args.pedal_from:.0f}: '
+              f'targets (output rpm) {targets}; {n} cells raised')
+        if args.rpm > 7100:
+            print('warning: above the ~7100 rpm stock TCU guard', file=sys.stderr)
     elif args.cmd == 'redline-hold':
         n, targets = op_redline_hold(buf, xdf, args.redline, args.margin,
                                      {'1>2': args.r1, '2>3': args.r2, '3>4': args.r3})

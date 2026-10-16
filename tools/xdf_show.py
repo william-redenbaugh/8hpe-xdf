@@ -2,11 +2,11 @@
 """Decode and print one XDF item's values from a calibration image.
 
 Examples:
-  xdf_show.py 8hpe_cali_v3.xdf my_read.bin "Radumfang"
-  xdf_show.py 8hpe_cali_v3.xdf my_read.bin "Upshift lines, char 00: 1>2..5>6"
-  xdf_show.py 8hpe_cali_v3.xdf my_read.bin 0x616          # by uniqueid
-  xdf_show.py 8hpe_cali_v3.xdf my_read.bin tcc_slip --all # every match
-  xdf_show.py 8hpe_cali_v3.xdf my_read.bin tcc_slip_cond_map --csv
+  xdf_show.py 8hpe84_cali_v1.xdf my_read.bin "Radumfang"
+  xdf_show.py 8hpe84_cali_v1.xdf my_read.bin "Upshift lines, char 00: 1>2..5>6"
+  xdf_show.py 8hpe84_cali_v1.xdf my_read.bin 0x616          # by uniqueid
+  xdf_show.py 8hpe84_cali_v1.xdf my_read.bin tcc_slip --all # every match
+  xdf_show.py 8hpe84_cali_v1.xdf my_read.bin tcc_slip_cond_map --csv
 """
 import argparse
 import sys

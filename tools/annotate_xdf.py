@@ -10,7 +10,7 @@ CRLF line endings, formatting - is preserved. Idempotent: items already
 carrying a 'SPECULATIVE GUESS' marker are skipped.
 
 Usage:
-  python3 annotate_xdf.py ../8hpe_cali_v3.xdf ../docs/data/unlabelled-guesses.csv
+  python3 annotate_xdf.py ../8hpe84_cali_v1.xdf ../docs/data/unlabelled-guesses.csv
 
 The file is modified IN PLACE (keep it under version control); pass
 -o OUT.xdf to write a copy instead.

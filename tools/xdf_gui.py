@@ -22,6 +22,7 @@ Checksums are NOT corrected - run the saved bin through your checksum flow
 (8HPe Quickflash corrects at flash time).
 """
 import re
+import os
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -1165,7 +1166,10 @@ class App(tk.Tk):
 
 
 def main():
-    xdf_path = sys.argv[1] if len(sys.argv) > 1 else '../8hpe_cali_v3.xdf'
+    xdf_path = sys.argv[1] if len(sys.argv) > 1 else next(
+        (c for c in ('../8hpe84_cali_v1.xdf', '../8hpe70_cali_v3.xdf',
+                     '../8hpe_cali_v3.xdf') if os.path.exists(c)),
+        '../8hpe84_cali_v1.xdf')
     bin_path = sys.argv[2] if len(sys.argv) > 2 else None
     App(xdf_path, bin_path).mainloop()
 

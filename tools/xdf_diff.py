@@ -3,9 +3,9 @@
 changed and (for tables/constants) the per-cell differences.
 
 Examples:
-  xdf_diff.py 8hpe_cali_v3.xdf stock.bin tuned.bin
-  xdf_diff.py 8hpe_cali_v3.xdf stock.bin tuned.bin --cells
-  xdf_diff.py 8hpe_cali_v3.xdf stock.bin tuned.bin --raw   # also bytes not covered by any item
+  xdf_diff.py 8hpe84_cali_v1.xdf stock.bin tuned.bin
+  xdf_diff.py 8hpe84_cali_v1.xdf stock.bin tuned.bin --cells
+  xdf_diff.py 8hpe84_cali_v1.xdf stock.bin tuned.bin --raw   # also bytes not covered by any item
 """
 import argparse
 import sys

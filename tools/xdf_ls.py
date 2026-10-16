@@ -2,11 +2,11 @@
 """List and search items defined in a TunerPro XDF.
 
 Examples:
-  xdf_ls.py 8hpe_cali_v3.xdf --categories
-  xdf_ls.py 8hpe_cali_v3.xdf -c "Torque converter: slip"
-  xdf_ls.py 8hpe_cali_v3.xdf -s tcc_slip
-  xdf_ls.py 8hpe_cali_v3.xdf --addr 0x1D0AB6 --slack 64
-  xdf_ls.py 8hpe_cali_v3.xdf -s radumfang --long
+  xdf_ls.py 8hpe84_cali_v1.xdf --categories
+  xdf_ls.py 8hpe84_cali_v1.xdf -c "Torque converter: slip"
+  xdf_ls.py 8hpe84_cali_v1.xdf -s tcc_slip
+  xdf_ls.py 8hpe84_cali_v1.xdf --addr 0x1D0AB6 --slack 64
+  xdf_ls.py 8hpe84_cali_v1.xdf -s radumfang --long
 """
 import argparse
 import sys

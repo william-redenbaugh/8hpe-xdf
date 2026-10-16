@@ -7,9 +7,9 @@ corrected by this tool or the XDF - recompute the segment CRC before flashing
 (8HPe Quickflash does it automatically).
 
 Examples:
-  xdf_patch.py 8hpe_cali_v3.xdf --list
-  xdf_patch.py 8hpe_cali_v3.xdf my.bin --show "Start in 2nd"
-  xdf_patch.py 8hpe_cali_v3.xdf my.bin --apply "True manual" -o my_tm.bin
+  xdf_patch.py 8hpe84_cali_v1.xdf --list
+  xdf_patch.py 8hpe84_cali_v1.xdf my.bin --show "Start in 2nd"
+  xdf_patch.py 8hpe84_cali_v1.xdf my.bin --apply "True manual" -o my_tm.bin
 """
 import argparse
 import sys

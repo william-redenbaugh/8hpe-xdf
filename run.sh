@@ -37,4 +37,6 @@ if [ -z "$PY" ]; then
     fi
 fi
 
-cd "$dir/tools" && exec "$PY" xdf_gui.py "$dir/8hpe_cali_v3.xdf" "$@"
+xdf="$dir/8hpe84_cali_v1.xdf"
+[ -f "$xdf" ] || xdf="$dir/8hpe70_cali_v3.xdf"
+cd "$dir/tools" && exec "$PY" xdf_gui.py "$xdf" "$@"

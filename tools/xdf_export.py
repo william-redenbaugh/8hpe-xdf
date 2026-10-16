@@ -3,9 +3,9 @@
 pass a bin with --bin to also include decoded values for every item).
 
 Examples:
-  xdf_export.py 8hpe_cali_v3.xdf -o inventory.json
-  xdf_export.py 8hpe_cali_v3.xdf -o inventory.csv --csv
-  xdf_export.py 8hpe_cali_v3.xdf --bin my_read.bin -o full_dump.json
+  xdf_export.py 8hpe84_cali_v1.xdf -o inventory.json
+  xdf_export.py 8hpe84_cali_v1.xdf -o inventory.csv --csv
+  xdf_export.py 8hpe84_cali_v1.xdf --bin my_read.bin -o full_dump.json
 """
 import argparse
 import csv
