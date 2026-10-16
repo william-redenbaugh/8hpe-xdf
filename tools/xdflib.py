@@ -12,11 +12,24 @@ Notes on this XDF specifically:
   * mmedtypeflags bits: 0x01 signed, 0x02 LSB-first, 0x04 column-major,
     0x10000 float (IEEE754, 32-bit).
   * Strided layouts: every strided element in this file is column-major with
-    mmedmajorstridebits=0 and mmedminorstridebits>0. Empirically (verified
-    against the shift-line slot layout documented in the XDF descriptions),
-    the column pitch is:  (rowcount-1)*elementsizebits + minorstridebits.
-    That convention is what decode() implements; a different XDF generator
-    may mean something else by these fields.
+    mmedmajorstridebits=0 and mmedminorstridebits>0, and the column pitch is
+    (rowcount-1)*elementsizebits + minorstridebits, which is what decode()
+    implements. This matches TunerPro, and is not a guess: TunerPro's own
+    shipped help (TunerProHelp.chm, topic XDFTableEditor, in the installer -
+    the copy on the public website is the 2009 revision, written before
+    strides existed, which is why the web says nothing about them) defines
+    Minor Stride as "the number of bytes between the start of the last cell
+    of a column and the start of the first cell of the next column", and
+    Major Stride as the cell-to-cell step within a column, with 0 meaning
+    "same as the cell size". The same wording appears in the field tooltips
+    inside XDFEditor.dll. Note the unit mismatch: the editor labels these
+    fields "(Bytes)" while the XML attribute names say bits, so the stored
+    number is bytes*8 - a 32-byte minor stride is written as 256.
+    Checked numerically against a genuine E70 image: for the 15x5 u16
+    shift-line blocks this places the gear-pair columns 60 bytes apart and
+    reproduces the firmware's own shift-line layout, and every column equals
+    the separate single-curve table that aliases the same bytes. Five rival
+    readings of the field were tested and all five disagree with the data.
 
 Drive-mode groups: the char-to-drive-mode mapping (which shift characteristic
 a program like Sport selects) lives in the program ROM, not the calibration,
