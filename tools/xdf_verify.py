@@ -69,10 +69,10 @@ def coverage_mask(xdf, include_axes):
             mark(emb, rows, cols)
         if include_axes:
             for ax in ('x', 'y'):
-                axis = getattr(t, ax, None)
+                axis = t.axes.get(ax)
                 emb = axis.embedded if axis is not None else None
                 if emb is not None and emb.address is not None:
-                    mark(emb, 1, axis.indexcount or 1)
+                    mark(emb, 1, axis.count or 1)
     for c in xdf.constants:
         emb = c.embedded
         if emb is not None and emb.address is not None:
@@ -151,18 +151,22 @@ def main():
     for t in xdf.tables:
         title = t.title
         if title.startswith('Upshift char ') or title.startswith('Downshift char '):
-            x = getattr(t, 'x', None)
+            x = t.axes.get('x')
             emb = x.embedded if x is not None else None
             if emb is not None and emb.address is not None:
-                n = x.indexcount or 15
+                n = x.count or 15
                 step = emb.elem_bits // 8
                 raw_s = stock[emb.address:emb.address + n * step]
                 raw_t = tuned[emb.address:emb.address + n * step]
                 if raw_s != raw_t and not args.allow_axis:
                     fails.append(f'pedal axis bytes changed under "{title}" @0x{emb.address:X}')
                 vals = [int.from_bytes(raw_t[k * step:(k + 1) * step], 'big') for k in range(n)]
-                if any(vals[k] >= vals[k + 1] for k in range(len(vals) - 1)):
-                    fails.append(f'pedal axis not strictly ascending under "{title}" @0x{emb.address:X}')
+                # Repeated breakpoints are legitimate (stock char 08 plateaus at
+                # 500/660/820/980); only a decrease breaks interpolation.
+                drops = [k for k in range(len(vals) - 1) if vals[k] > vals[k + 1]]
+                if drops:
+                    fails.append(f'pedal axis decreases under "{title}" @0x{emb.address:X} '
+                                 f'at index {drops[0]} ({vals[drops[0]]} -> {vals[drops[0] + 1]})')
             if title.startswith('Upshift char '):
                 ups[title.replace('Upshift char ', '')] = t
     for t in xdf.tables:
