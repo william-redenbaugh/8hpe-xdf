@@ -6,12 +6,26 @@ stage-3 calibration modifies. This tool takes the shift-pressure maps from
 that folder - shift_press_map_b* - and raises them, which applies the clutch
 harder so the shift is shorter and firmer.
 
-Confidence: these maps are rated LOW in the XDF. A stage-3 tune demonstrably
-rewrites them, but their row/column meaning is not proven by the reverse
-engineering behind this definition. So a cell is only ever raised towards the
-largest value that same map already contains: nothing is pushed past a
-pressure ZF itself commands somewhere in that map. That is the whole safety
-story for this tool, and it is why there is no "unlimited" setting.
+Read this before trusting it. These maps are rated LOW confidence, and the
+XDF's own evidence line for them says "Structure auto-detected by e_calscan.py
+... Meaning not analysed. Read by: unknown." So two things are unproven:
+
+  * that they are shift pressure at all. The name is a guess made by a
+    structural scanner, not a conclusion from the firmware. The shape is at
+    least consistent with it - 6x3 s16, values 3500..19000 (plausible mbar)
+    over an axis spanning 2000..7000 (plausible rpm) - but no reader function
+    has been identified.
+  * that an XHP stage-3 tune changes them. They sit in the XDF's "stage 3"
+    category, which is documented as the list of maps such a tune touches, but
+    the only off-the-shelf tune available for comparison here targets a
+    different calibration (b0bc2323; this XDF addresses b5yc1111), so that
+    claim has not been checked byte for byte.
+
+What IS verified: a cell is only ever raised towards the largest value that
+same map already contains, so nothing is pushed past a value ZF itself writes
+somewhere in that map; and the edit touches those eight maps and nothing else.
+That is why there is no "unlimited" setting. Change this in small steps and
+check the car.
 
 Checksums are not corrected - sign before flashing, and always gate the result:
 
@@ -119,8 +133,10 @@ def main():
         print(f'  {t.title[:28]:28s} @0x{t.z.embedded.address:X}  '
               f'{n:2d}/{cells:<2d} cells raised  (capped at this map\'s max {ceiling})')
     print(f'{total} cells changed across {len(tables)} tables')
-    print('note: shift_press_map_b* are LOW confidence - raised only towards each '
-          "map's own existing maximum, never beyond it.")
+    print("note: shift_press_map_b* are LOW confidence - the XDF says their meaning "
+          'is not analysed and no reader function is known, so "shift pressure" is a '
+          'structural guess. Raised only towards each map\'s own existing maximum, '
+          'never beyond it. Change in small steps and check the car.')
 
     if args.preview:
         print('\npreview only, no file written')

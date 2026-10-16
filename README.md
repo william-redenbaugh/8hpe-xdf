@@ -41,11 +41,27 @@ Levels are `mild` (+4%), `sport` (+8%, default) and `max` (+14%).
 It edits the eight `shift_press_map_b*` maps from the XDF's **stage 3** category — the folder that
 collects the maps a commercial XHP-style stage-3 calibration modifies.
 
-**What keeps this safe.** Those maps are rated **LOW confidence**: a stage-3 tune demonstrably
-rewrites them, but their row/column meaning is not proven by the reverse engineering behind this
-definition. So a cell is only ever raised *towards the largest value that same map already
-contains* — never past a pressure ZF itself commands somewhere in that map. That is why there is no
-unlimited setting, and why `--pct` stops at 50.
+**Read this before trusting it.** Those maps are rated **LOW confidence**, and the XDF's own
+evidence line for them says *"Structure auto-detected by e_calscan.py … Meaning not analysed. Read
+by: unknown."* Two things are therefore unproven:
+
+- **That they are shift pressure at all.** The name came from a structural scanner, not from the
+  firmware. The shape is consistent with it — 6×3 signed 16-bit, values 3500–19000 (plausible mbar)
+  over an axis spanning 2000–7000 (plausible rpm) — but no reader function has been identified.
+- **That an XHP tune changes them.** They sit in the XDF's `stage 3` category, documented as the
+  list of maps such a tune touches, but this has not been checked byte for byte (see below).
+
+**What is verified.** A cell is only ever raised *towards the largest value that same map already
+contains*, so nothing is pushed past a value ZF itself writes somewhere in that map; and the edit
+provably touches those eight maps and nothing else. That is why there is no unlimited setting and
+why `--pct` stops at 50. Change it in small steps and check the car.
+
+**Verifying against a real XHP tune.** To confirm the toggle changes only what XHP changes, two
+files are needed *for the same calibration this XDF addresses*: a stock read and the XHP stage-3
+version of it. Diff them, and compare the changed byte ranges with the toggle's. The off-the-shelf
+tune available during development targeted a different calibration (`b0bc2323`, while this XDF
+addresses `b5yc1111`), where the same addresses hold entirely different structures, so that
+comparison was not possible.
 
 ## Before you flash
 
