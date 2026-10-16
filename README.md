@@ -31,13 +31,29 @@ addresses in the XDF are file offsets.
 | `8hpe70_cali_v3.xdf` | The definition. Open it in TunerPro with your own read. |
 | `tools/xdf_stage3.py` | Raise shift pressure using the maps a stage-3 tune touches. |
 | `tools/xdf_verify.py` | Prove a modified bin changes nothing it shouldn't. Run before flashing. |
-| `tools/xdflib.py` | The XDF parser both tools use. |
+| `tools/xdf_gui.py` | The same thing with a window; start it with `./run.sh`. |
+| `tools/xdflib.py` | The XDF parser the tools share. |
 
 Dependency-free Python 3. On macOS use `/usr/bin/python3` — some Homebrew builds ship a broken
 `pyexpat`, which `xdflib` works around with its own parser, but the system Python avoids the issue
 entirely.
 
-## Raising shift pressure
+## The GUI
+
+```sh
+./run.sh
+```
+
+Then **Open bin...**, pick a level or an exact percentage, **Preview** to see what would change,
+**Apply**, **Check bin**, and **Save As...**. Nothing is written to disk until you save, and
+**Undo** steps back through every change. The calibration identity is checked the moment a bin is
+opened and shown top-right; if it does not match, editing stays blocked.
+
+`run.sh` picks a Python whose Tk actually works - Apple's `/usr/bin/python3` ships Tk 8.5, which
+recent macOS refuses to start, so a Homebrew Python with `brew install python-tk` is preferred when
+present.
+
+## Raising shift pressure (command line)
 
 More shift pressure applies the clutch harder, so the shift is shorter and firmer.
 
