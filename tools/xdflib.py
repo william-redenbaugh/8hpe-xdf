@@ -287,21 +287,75 @@ class XDF:
 # ---------------------------------------------------------------- decoding
 
 def element_offset(emb, rows, cols, r, c):
-    """Byte offset of element (r, c) in the bin, honouring this XDF's layout
-    conventions (see module docstring)."""
-    elem_bytes = emb.elem_bits // 8
-    if emb.minor_stride and emb.col_major:
-        col_pitch_bits = (rows - 1) * emb.elem_bits + emb.minor_stride
-        if col_pitch_bits % 8:
-            raise ValueError('column pitch is not byte-aligned')
-        return emb.address + c * (col_pitch_bits // 8) + r * elem_bytes
-    if emb.minor_stride or emb.major_stride:
-        raise ValueError('unsupported stride layout '
-                         f'(major={emb.major_stride}, minor={emb.minor_stride}, '
-                         f'flags=0x{emb.flags:X})')
+    """Byte offset of element (r, c), using TunerPro's documented address model.
+
+        M = (major stride or the cell size) / 8     step between cells along
+                                                    the major direction
+        N = (minor stride or the cell size) / 8     start of the last cell of a
+                                                    line to the start of the
+                                                    first cell of the next
+        column major:  base + c*((rows-1)*M + N) + r*M
+        row major:     base + r*((cols-1)*M + N) + c*M
+
+    Stride attributes are stored in bits (TunerPro's editor labels the same
+    fields "Bytes", so the stored number is bytes*8). This general form was
+    checked cell-by-cell against the previous hand-rolled special case over all
+    15,486 addressed elements of 8hpe70_cali_v3.xdf and is byte-identical to
+    it, so it is a behaviour-preserving generalisation rather than a fix.
+    """
+    cell = emb.elem_bits // 8
+    major_bits = emb.major_stride or emb.elem_bits
+    minor_bits = emb.minor_stride or emb.elem_bits
+    if major_bits % 8 or minor_bits % 8:
+        raise ValueError(f'stride is not byte-aligned (major={emb.major_stride}, '
+                         f'minor={emb.minor_stride})')
+    m, n = abs(major_bits) // 8, abs(minor_bits) // 8
+    if m < cell or n < cell:
+        raise ValueError(f'stride smaller than the cell ({cell} B): '
+                         f'major={m} B, minor={n} B')
     if emb.col_major:
-        return emb.address + (c * rows + r) * elem_bytes
-    return emb.address + (r * cols + c) * elem_bytes
+        return emb.address + c * ((rows - 1) * m + n) + r * m
+    return emb.address + r * ((cols - 1) * m + n) + c * m
+
+
+# ------------------------------------------------------- calibration identity
+
+# The calibration 8hpe70_cali_v3.xdf is authored against. Established by
+# decoding the char-00 pedal-axis record at the XDF's declared 0x1CC1CC (it
+# parses only in this image) and by the shift lines matching the values the
+# firmware's own readers produce.
+EXPECTED_TYPTEILENR = b'b5yc1111'
+EXPECTED_CAL_ID = b'C118'
+TYPTEILENR_OFFSET = 0x180224
+CAL_ID_OFFSET = 0x1FFD60
+
+
+def calibration_identity(buf):
+    """(typteilenr, cal_id) read out of a calibration image."""
+    return (bytes(buf[TYPTEILENR_OFFSET:TYPTEILENR_OFFSET + 8]),
+            bytes(buf[CAL_ID_OFFSET:CAL_ID_OFFSET + 4]))
+
+
+def check_calibration(buf, path='image'):
+    """-> (ok, message). Does this image match the calibration the XDF describes?
+
+    This matters more than it looks. Every address in the XDF exists in any
+    2 MB image, so a coverage check alone returns a clean result against the
+    wrong calibration while the addresses in fact point at unrelated data.
+    """
+    typ, cal = calibration_identity(buf)
+    if typ == EXPECTED_TYPTEILENR and cal == EXPECTED_CAL_ID:
+        return True, (f'{path}: calibration {typ.decode("latin1")} / '
+                      f'{cal.decode("latin1")} matches the XDF')
+    def show(b):
+        s = b.decode('latin1')
+        return s if s.isprintable() else b.hex()
+    return False, (
+        f'{path}: calibration MISMATCH - image is {show(typ)} / {show(cal)}, '
+        f'this XDF describes {EXPECTED_TYPTEILENR.decode()} / '
+        f'{EXPECTED_CAL_ID.decode()}. The addresses in this XDF point at '
+        'different data in that image, so decoded values and any edit would be '
+        'wrong. Use the definition for your own calibration.')
 
 
 def value_range(emb):

@@ -42,7 +42,8 @@ import os
 import re
 import sys
 
-from xdflib import XDF, load_bin, decode_table, element_offset, write_elem
+from xdflib import (XDF, load_bin, decode_table, element_offset, write_elem,
+                    check_calibration)
 
 XDF_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            '..', '8hpe70_cali_v3.xdf')
@@ -107,6 +108,10 @@ def main():
                          '(default: sport)')
     ap.add_argument('--pct', type=float,
                     help='exact percentage instead of --level (0..50)')
+    ap.add_argument('--any-calibration', action='store_true',
+                    help='edit even if the image is a different calibration from '
+                         'the one this XDF describes (the addresses then mean '
+                         'something else - almost always wrong)')
     ap.add_argument('--preview', action='store_true',
                     help='report what would change without writing a bin')
     args = ap.parse_args()
@@ -118,12 +123,24 @@ def main():
         sys.exit('--pct must be within 0..50')
 
     xdf = XDF(args.xdf)
+    buf_probe = load_bin(args.bin)
+    ok, msg = check_calibration(buf_probe, os.path.basename(args.bin))
+    if ok:
+        print(msg)
+    elif args.any_calibration:
+        print('WARNING: ' + msg, file=sys.stderr)
+        print('continuing anyway because --any-calibration was given',
+              file=sys.stderr)
+    else:
+        sys.exit(msg + '\n\nRefusing to edit. Pass --any-calibration only if you '
+                 'know why the identity differs.')
+
     tables = pressure_tables(xdf)
     if not tables:
         sys.exit(f'no stage-3 shift_press_map_b* tables in {args.xdf} - '
                  'is this the E70 XDF?')
 
-    buf = bytearray(load_bin(args.bin))
+    buf = bytearray(buf_probe)
     total = 0
     label = f'+{pct:g}%' + ('' if args.pct is not None else f' ({args.level})')
     print(f'stage-3 shift pressure {label}')

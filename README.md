@@ -4,7 +4,20 @@ A TunerPro XDF for the ZF 8HP E-series transmission controller (Bosch iTCU2, SH-
 plus a small Python tool that raises shift pressure and a checker that proves a modified binary is
 safe to flash.
 
-**Target: E70, calibration ZB 8646496.** Nothing else is supported.
+**Target: one specific calibration — `TYPTEILENR b5yc1111`, cal-ID `C118`.** Nothing else is
+supported, and both tools now refuse to run against anything else.
+
+This matters more than it sounds. Every address in this XDF exists in *any* 2 MB image, so pointed
+at the wrong calibration the tools would read and write perfectly "valid-looking" bytes that in
+fact mean something else entirely. Check yours before anything else:
+
+```sh
+python3 -c "b=open('your.bin','rb').read(); print(b[0x180224:0x18022C], b[0x1FFD60:0x1FFD64])"
+# must print  b'b5yc1111' b'C118'
+```
+
+If it prints something else — `b5yc1313`/`C138`, for instance — this definition is **not** for your
+car and you need one built for your own calibration.
 
 The XDF contains independently reverse-engineered *descriptive metadata* — addresses, data types,
 scaling and labels. It contains no vendor firmware and no calibration data. You supply the
@@ -69,9 +82,15 @@ comparison was not possible.
 python3 xdf_verify.py ../8hpe70_cali_v3.xdf stock.bin tuned.bin
 ```
 
-It fails unless every changed byte lands inside a table the XDF describes, and it additionally
-refuses a bin that touches the program region, the calibration header, the `ZFADINFO` identification
-block or the signature tail, or that leaves a pedal axis decreasing. A clean run prints `PASS`.
+It fails unless the image is the calibration this XDF describes **and** every changed byte lands
+inside a table the XDF describes. It additionally refuses a bin that touches the program region, the
+calibration header, the `ZFADINFO` identification block or the signature tail, or that leaves a
+pedal axis decreasing. A clean run prints `PASS`.
+
+Two honest limits on what a `PASS` means. It says the edit was structurally contained; it cannot
+say the calibration is good for your car. And if your read is calibration-only (everything below
+`0x180200` is `0xFF` padding), the program-region check compares padding with padding and proves
+nothing — the tool now says so rather than passing quietly.
 
 Checksums are **not** handled here. Sign the image with your flash tool (xHP corrects checksums
 itself) after any edit.

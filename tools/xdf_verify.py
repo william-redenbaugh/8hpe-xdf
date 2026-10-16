@@ -28,7 +28,7 @@ Checksums are NOT verified or corrected here - the flash tool signs.
 import argparse
 import sys
 
-from xdflib import XDF, load_bin, decode_table
+from xdflib import XDF, load_bin, decode_table, check_calibration
 
 CAL_START = 0x180200
 CAL_END = 0x200000
@@ -57,11 +57,14 @@ def coverage_mask(xdf, include_axes):
                     if 0 <= off < CAL_END - step:
                         for k in range(step):
                             mask[off + k] = 1
-        except ValueError:
-            lo = emb.address
-            for k in range(step * rows * cols):
-                if lo + k < CAL_END:
-                    mask[lo + k] = 1
+        except ValueError as e:
+            # Never fall back to a guessed contiguous span: that would mark the
+            # wrong bytes as "covered" and make this gate approve edits it has
+            # not actually checked.
+            raise SystemExit(
+                f'cannot compute the byte layout of a table at '
+                f'0x{emb.address:X} ({e}). Refusing to verify, because a '
+                'guessed layout would silently approve the wrong bytes.')
     for t in xdf.tables:
         emb = t.z.embedded if t.z else None
         if emb is not None and emb.address is not None:
@@ -103,12 +106,36 @@ def main():
     ap.add_argument('--allow-axis', action='store_true',
                     help='axis-data edits are intended (Bulk edit of axes)')
     ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument('--any-calibration', action='store_true',
+                    help='downgrade a calibration-identity mismatch to a warning '
+                         '(you are then on your own: the addresses mean '
+                         'something else in that image)')
     args = ap.parse_args()
 
     xdf = XDF(args.xdf)
     stock = load_bin(args.stock)
     tuned = load_bin(args.tuned)
     fails, warns = [], []
+
+    # Calibration identity. Without this the coverage check below is
+    # meaningless on a foreign image: every XDF address exists in any 2 MB
+    # file, so a wrong-calibration bin "passes" while the addresses actually
+    # describe unrelated data.
+    for buf, name in ((stock, 'stock'), (tuned, 'tuned')):
+        ok, msg = check_calibration(buf, name)
+        if ok:
+            print(msg)
+        elif args.any_calibration:
+            warns.append(msg + '  [--any-calibration given]')
+        else:
+            fails.append(msg)
+
+    # A calibration-only read is padded with 0xFF below the cal block, so the
+    # program-region comparison would pass by comparing padding with padding.
+    if all(b == 0xFF for b in stock[:CAL_START]):
+        warns.append('stock image is 0xFF below 0x%X - a calibration-only read, '
+                     'so the program-region check proves nothing here'
+                     % CAL_START)
 
     if len(stock) != len(tuned):
         print(f'FAIL: size mismatch (stock {len(stock)}, tuned {len(tuned)})')
