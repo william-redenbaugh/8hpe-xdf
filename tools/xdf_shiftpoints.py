@@ -25,11 +25,23 @@ which is what stops the box hunting between two gears. Upshifts are capped so
 the engine speed they imply stays under --max-engine-rpm (the stock TCU guard
 is around 7100). Cells holding the disabled sentinel (>= 8000) are left alone.
 
-Which characteristics belong to which mode is NOT recorded in the calibration -
-it comes from the strategy state table strat_shift_char_index @0x1C9218, and
-pinning each mode down needs the program ROM. Until you have that mapping for
-your car, give --chars explicitly, or put your own mapping in modes.json next
-to the XDF:  {"sport": [8, 14], "normal": [0, 15]}
+Which characteristics belong to which mode is NOT recorded in the calibration.
+strat_shift_char_index @0x1C9218 maps strategy state (0..99) to characteristic,
+but which states a mode occupies lives in the program ROM. You do not have to
+wait for that: --identify finds it by experiment.
+
+    xdf_shiftpoints.py stock.bin --identify 8 -o probe.bin
+
+That makes ONE characteristic unmistakable - it holds 2nd gear to the rev cap
+and nothing else changes - so you flash it, drive each mode, and whichever mode
+suddenly refuses to leave 2nd is the mode that uses characteristic 8. Record it
+and move on:
+
+    xdf_shiftpoints.py stock.bin --set-mode sport=8,14
+
+which writes modes.json beside the XDF. After that --mode sport works. The
+marker is deliberately a hold-longer change, not a shift-early one, so a
+mis-identified characteristic cannot leave the car lugging.
 
 Checksums are not corrected - sign before flashing, and gate the result:
 
@@ -127,14 +139,39 @@ def main():
     ap.add_argument('--max-engine-rpm', type=float, default=7000,
                     help='cap implied engine speed (default 7000; TCU guard ~7100)')
     ap.add_argument('--ratios', help='override gear ratios, e.g. 1:4.7,2:3.1,...')
+    ap.add_argument('--identify', type=int, metavar='CH',
+                    help='make characteristic CH unmistakable (holds 2nd to the '
+                         'rev cap) so you can find which mode uses it by driving')
+    ap.add_argument('--set-mode', metavar='NAME=CH[,CH]',
+                    help=f'record a mode in {MODES_FILE} beside the XDF and exit')
     ap.add_argument('--any-calibration', action='store_true')
     ap.add_argument('--preview', action='store_true')
     args = ap.parse_args()
 
+    if args.set_mode:
+        if '=' not in args.set_mode:
+            ap.error('--set-mode looks like  sport=8,14')
+        name, chars_s = args.set_mode.split('=', 1)
+        groups, path = load_modes(args.xdf)
+        groups[name.strip()] = {int(c) for c in chars_s.split(',') if c.strip()}
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump({k: sorted(v) for k, v in groups.items()}, f, indent=1)
+        print(f'{path}: ' + ', '.join(f'{k} = {sorted(v)}' for k, v in
+                                      sorted(groups.items())))
+        return
     if not args.preview and not args.out:
         ap.error('give -o OUT, or use --preview')
-    if not any((args.up_pct, args.dn_pct, args.up_rpm, args.dn_rpm)):
-        ap.error('nothing to do: give --up-pct/--dn-pct or --up-rpm/--dn-rpm')
+    if args.identify is None and not any(
+            (args.up_pct, args.dn_pct, args.up_rpm, args.dn_rpm)):
+        ap.error('nothing to do: give --up-pct/--dn-pct, --up-rpm/--dn-rpm, '
+                 '--identify or --set-mode')
+    if args.identify is not None:
+        # One characteristic, one unmistakable symptom: hold 2nd to the cap.
+        args.chars = str(args.identify)
+        args.up_pct = 49.0
+        args.dn_pct = 0.0
+        args.up_rpm = args.dn_rpm = 0.0
+        args.pedal_from = 0.0
     for name, v in (('--up-pct', args.up_pct), ('--dn-pct', args.dn_pct)):
         if not -50 <= v <= 50:
             sys.exit(f'{name} must be within -50..50')
